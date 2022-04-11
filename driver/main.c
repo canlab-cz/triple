@@ -50,6 +50,7 @@
 #include <linux/kernel.h>
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
+#include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0)
 #include <linux/can/dev.h>
 #endif
@@ -73,12 +74,12 @@ MODULE_AUTHOR("Canlab");
  */
 #endif
 
-bool trace_func_main = false;
-bool trace_func_tran = false;
-bool trace_func_pars = false;
-bool show_debug_main = false;
-bool show_debug_tran = false;
-bool show_debug_pars = false;
+bool trace_func_main = true;
+bool trace_func_tran = true;
+bool trace_func_pars = true;
+bool show_debug_main = true;
+bool show_debug_tran = true;
+bool show_debug_pars = true;
 
 int maxdev = 3;
 __initconst const char banner[] = "USB2CAN TRIPLE SocketCAN interface driver\n";
@@ -96,13 +97,17 @@ static int triple_open(struct tty_struct *tty);
 static void triple_close(struct tty_struct *tty);
 static int triple_hangup(struct tty_struct *tty);
 static int triple_ioctl(struct tty_struct *tty, struct file *file, unsigned int cmd, unsigned long arg);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
+static void triple_receive_buf(struct tty_struct *tty, const unsigned char *cp, const char *fp, int count);
+#else
 static void triple_receive_buf(struct tty_struct *tty, const unsigned char *cp, char *fp, int count);
+#endif
 static void triple_write_wakeup(struct tty_struct *tty);
 
 static struct tty_ldisc_ops triple_ldisc =
     {
         .owner = THIS_MODULE,
-//.num = N_TRIPLE,
+        .num = N_TRIPLE,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 13, 0)
         .magic = TTY_LDISC_MAGIC,
 #endif
@@ -157,8 +162,13 @@ static int __init triple_init(void)
   if (!triple_devs)
     return -ENOMEM;
 
-  /* Fill in our line protocol discipline, and register it */
+/* Fill in our line protocol discipline, and register it */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
+  status = tty_register_ldisc(&triple_ldisc);
+#else
   status = tty_register_ldisc(N_TRIPLE, &triple_ldisc);
+#endif
+
   printk(KERN_ERR "triple: register line discipline%d\n", N_TRIPLE);
 
   if (status)
@@ -239,18 +249,25 @@ static void __exit triple_exit(void)
       dev->destructor = NULL;
 #endif
     }
-
     unregister_netdev(dev);
   }
 
   kfree(triple_devs);
   triple_devs = NULL;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
+  tty_unregister_ldisc(&triple_ldisc);
+#else
   tty_unregister_ldisc(N_TRIPLE);
+#endif
 
 } /* END: triple_exit() */
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
+static void triple_receive_buf(struct tty_struct *tty, const unsigned char *cp, const char *fp, int count)
+#else
 static void triple_receive_buf(struct tty_struct *tty, const unsigned char *cp, char *fp, int count)
+#endif
 {
   USB2CAN_TRIPLE *adapter = (USB2CAN_TRIPLE *)tty->disc_data;
 
@@ -587,16 +604,16 @@ static netdev_tx_t triple_xmit(struct sk_buff *skb, struct net_device *dev)
   netif_stop_queue(adapter->devs[1]);
   netif_stop_queue(adapter->devs[2]);
 
-  //int can_fd_channel = 2;
+   int can_fd_channel = 2;
 
-  // if ((channel == can_fd_channel) && (adapter->can_fd)) // CAN_FD
-  //{
+  if ((channel == can_fd_channel)) // CAN_FD
+  {
   triple_encaps_fd(adapter, 2, (struct canfd_frame *)skb->data); // sockatCAN frame -> Triple HW (ttyWrite)
-  //}
-  // else // CAN 2.0
-  // {
-  //   triple_encaps(adapter, channel, (struct can_frame *)skb->data); // sockatCAN frame -> Triple HW (ttyWrite)
-  // }
+  }
+   else // CAN 2.0
+  {
+     triple_encaps(adapter, channel, (struct can_frame *)skb->data); // sockatCAN frame -> Triple HW (ttyWrite)
+  }
 
   spin_unlock(&adapter->lock);
 

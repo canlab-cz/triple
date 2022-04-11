@@ -88,7 +88,7 @@ int main (int argc, char *argv[])
   int             speed[3];
   char           *name[3];
   bool listen_only[3];
-  unsigned int user_speed[10];
+  unsigned int user_speed[11];
   bool can_fd = true;
   bool iso_crc = false;
   bool esi = false;
@@ -104,7 +104,7 @@ int main (int argc, char *argv[])
   const char delim[] = ":";
   int i = 0;
 
-  char *tmp[3];
+  char *tmp[11];
 
   while ((opt = getopt(argc, argv, "s:n:l:duvtwh?f:c:")) != -1)
   {
@@ -261,7 +261,8 @@ int main (int argc, char *argv[])
   else
   {
     USB2CAN_TRIPLE_SendFDCANUsrSpeed(user_speed[NBRP], user_speed[NTSEG1], user_speed[NTSEG2], user_speed[NSJW],
-                                     user_speed[DBRP], user_speed[DTSEG1], user_speed[DTSEG2], user_speed[DSJW], user_speed[TDCO], user_speed[TDCV], user_speed[TDCMOD],
+                                     user_speed[DBRP], user_speed[DTSEG1], user_speed[DTSEG2], user_speed[DSJW],
+                                     user_speed[TDCO], user_speed[TDCV], user_speed[TDCMOD],
                                      listen_only[PORT_3], esi, iso_crc, fd);
   }
     syslog(LOG_NOTICE, "can1 setting speed: %d listen only: %d!\n", speed[PORT_3], listen_only[PORT_3]);
