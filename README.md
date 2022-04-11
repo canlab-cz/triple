@@ -13,10 +13,10 @@ Easy start :
 3. `make`
 4. `sh ./start.sh`
 
-Start script runs as default this config 
+Start script runs as default this config\
 port 1 - speed 250K, listen_only false\
 port 2 - speed 500k. listen_only false\
-port 3 - speed FD 125k-6M7, listen_only false
+port 3 - speed FD 125k-6M7, listen_only false, iso false, esi false
 
 To kill and unload all `sh ./end.sh` !!!!  Call it before you disconnect adapter from USB !!!!
 
