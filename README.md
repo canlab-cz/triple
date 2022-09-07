@@ -24,4 +24,13 @@ To kill and unload all `sh ./end.sh` !!!!  Call it before you disconnect adapter
 Tested on Ubuntu 20.04 - kernel 5.13\
 Tested on Ubuntu 22.04 - kernel 5.15
 
+Prepared Vmware virtual machine Ubuntu 22.04 with precompiled driver in /home/triple/triple, so it can be simply runned using start.sh script\
+also can-utils package is installed so you can use "candump can0" or "cansend can0 ..."\
+login: triple\
+pass: triple\
+https://drive.google.com/file/d/1VFilJfrP_WtX9L-TFU91_EmzbPdkmtHW/view?usp=sharing\
+
+To run this VM you need to install VMware Workstation player :\
+https://www.vmware.com/products/workstation-player.html
+
 
