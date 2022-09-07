@@ -1,6 +1,6 @@
 # USB2CAN
 
-Driver was tested on ubuntu 18.04
+Driver is experimental !!!
 
 SLCAN like driver for PIC based USB to CAN adapter USB2CAN Triple from Canlab s.r.o.
 For more info https://github.com/canlab-cz/triple/wiki/Manual
@@ -20,9 +20,17 @@ port 3 - speed FD 125k-6M7, listen_only false, iso false, esi false
 
 To kill and unload all `sh ./end.sh` !!!!  Call it before you disconnect adapter from USB !!!!
 
-## TODO
-1) Test on newer distributions... - CHECK - Ubuntu 20.04 - kernel 5.13
-1) Test on newer distributions... - CHECK - Ubuntu 22.04 - kernel 5.15
-2) Test CAN FD on port 3
-3) Utility improvements
+
+Tested on Ubuntu 20.04 - kernel 5.13\
+Tested on Ubuntu 22.04 - kernel 5.15
+
+Prepared Vmware virtual machine Ubuntu 22.04 with precompiled driver in /home/triple/triple, so it can be simply runned using start.sh script\
+also can-utils package is installed so you can use "candump can0" or "cansend can0 ..."\
+login: triple\
+pass: triple\
+https://drive.google.com/file/d/1VFilJfrP_WtX9L-TFU91_EmzbPdkmtHW/view?usp=sharing\
+
+To run this VM you need to install VMware Workstation player :\
+https://www.vmware.com/products/workstation-player.html
+
 
