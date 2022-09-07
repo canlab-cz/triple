@@ -21,7 +21,7 @@ port 3 - speed FD 125k-6M7, listen_only false, iso false, esi false
 To kill and unload all `sh ./end.sh` !!!!  Call it before you disconnect adapter from USB !!!!
 
 
-Tested on Ubuntu 20.04 - kernel 5.13
+Tested on Ubuntu 20.04 - kernel 5.13\
 Tested on Ubuntu 22.04 - kernel 5.15
 
 
