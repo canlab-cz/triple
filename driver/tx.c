@@ -37,7 +37,7 @@ void triple_unesc(USB2CAN_TRIPLE *adapter, unsigned char s)
 
   adapter->rcount++;
 
-  if (adapter->rbuff[tmp_count - 1] != U2C_TR_SPEC_BYTE && s == U2C_TR_LAST_BYTE)
+  if ((tmp_count - 1 > 0) && (adapter->rbuff[tmp_count - 1] != U2C_TR_SPEC_BYTE) && (s == U2C_TR_LAST_BYTE))
   {
     triple_bump(adapter);
     adapter->rcount = 0;
