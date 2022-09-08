@@ -28,7 +28,7 @@ Prepared Vmware virtual machine Ubuntu 22.04 with precompiled driver in /home/tr
 also can-utils package is installed so you can use "candump can0" or "cansend can0 ..."\
 login: triple\
 pass: triple\
-https://drive.google.com/file/d/1VFilJfrP_WtX9L-TFU91_EmzbPdkmtHW/view?usp=sharing\
+https://drive.google.com/file/d/1kBT1YvstEnOCgCjsyL4rnoIupsYYywCf/view?usp=sharing\
 
 To run this VM you need to install VMware Workstation player :\
 https://www.vmware.com/products/workstation-player.html
