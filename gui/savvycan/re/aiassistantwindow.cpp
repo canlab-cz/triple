@@ -87,6 +87,7 @@ AiAssistantWindow::AiAssistantWindow(const QVector<GuiFrame> *frameList, QWidget
     QPushButton *settingsBtn = new QPushButton(tr("API key and limits..."), this);
     QPushButton *newBtn = new QPushButton(tr("New conversation"), this);
     usageLabel = new QLabel(this);
+    usageLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     usageLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     QHBoxLayout *top = new QHBoxLayout;
     top->addWidget(new QLabel(tr("Model"), this));
@@ -130,6 +131,8 @@ AiAssistantWindow::AiAssistantWindow(const QVector<GuiFrame> *frameList, QWidget
     bottom->addWidget(input, 1);
     bottom->addLayout(btns);
     statusLabel = new QLabel(this);
+    statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    statusLabel->setWordWrap(true);
 
     QVBoxLayout *layout = new QVBoxLayout(this);
     layout->addLayout(top);
@@ -634,6 +637,12 @@ QString AiAssistantWindow::proposeDbc(const QJsonObject &in, bool &error)
             s.maxV = so.value("max").toDouble(0);
             s.unit = so.value("unit").toString().toStdString();
             s.comment = so.value("comment").toString().toStdString();
+            if (so.value("multiplexer").toBool()) s.muxRole = 1;
+            else if (so.contains("mux_value") && so.value("mux_value").toInt(-1) >= 0)
+            {
+                s.muxRole = 2;
+                s.muxValue = so.value("mux_value").toInt();
+            }
             if (s.name.empty() || s.length < 1 || s.length > 64 || s.startBit < 0 || s.startBit > 511)
             {
                 problems << tr("signal '%1' of %2: needs a name, start_bit 0..511 and length 1..64").arg(QString::fromStdString(s.name), idText);

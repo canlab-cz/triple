@@ -172,7 +172,7 @@ struct ByteStat {
     double entropy = 0;           /* bits */
 };
 
-enum class FieldKind { Constant, Counter, Checksum, Signal, Flag };
+enum class FieldKind { Constant, Counter, Checksum, Signal, Flag, Multiplexer };
 
 inline const char *kindName(FieldKind k)
 {
@@ -182,6 +182,7 @@ inline const char *kindName(FieldKind k)
     case FieldKind::Counter:  return "counter";
     case FieldKind::Checksum: return "checksum";
     case FieldKind::Flag:     return "flag";
+    case FieldKind::Multiplexer: return "multiplexer";
     default:                  return "signal";
     }
 }
@@ -205,6 +206,12 @@ struct IdAnalysis {
     std::vector<double>   flipRate;   /* per bit, index b * 8 + k, flips / (frames - 1) */
     std::vector<double>   oneRate;    /* fraction of frames with the bit set */
     std::vector<Field>    fields;
+    /* multiplexer found (whole capture analysis): Intel bit field whose value
+     * selects the layout of the other bytes; analyze each value separately */
+    int      muxStart = -1, muxLength = 0;
+    std::vector<uint64_t> muxValues;
+    /* set when the analysis was limited to one multiplexer value */
+    int64_t  muxFilter = -1;
 };
 
 /* Raw value of a bit field. Intel: start = LSB position, bits go up.
@@ -285,11 +292,28 @@ inline double counterScore(const std::vector<uint64_t> &v, int bits, uint64_t &s
 
 } // namespace detail
 
-inline IdAnalysis analyzeId(const Capture &c, const FrameKey &key, double t0 = -1, double t1 = -1)
+/* muxStart/muxLength/muxValue limit the analysis to the frames whose
+ * multiplexer field (Intel bit field) has that value. */
+inline IdAnalysis analyzeId(const Capture &c, const FrameKey &key, double t0 = -1, double t1 = -1,
+                            int muxStart = -1, int muxLength = 0, int64_t muxValue = -1)
 {
     IdAnalysis a;
     a.key = key;
     std::vector<size_t> idx = c.indices(key, t0, t1);
+    if (muxStart >= 0 && muxLength > 0 && muxValue >= 0)
+    {
+        std::vector<size_t> keep;
+        for (size_t i : idx)
+        {
+            bool ok;
+            uint64_t v = extractBits(c.data(i), c.frame(i).len, muxStart, muxLength, false, &ok);
+            if (ok && v == uint64_t(muxValue)) keep.push_back(i);
+        }
+        idx.swap(keep);
+        a.muxFilter = muxValue;
+        a.muxStart = muxStart;
+        a.muxLength = muxLength;
+    }
     std::map<int, size_t> lens;
     for (size_t i : idx) lens[c.frame(i).len]++;
     if (idx.empty()) return a;
@@ -347,54 +371,26 @@ inline IdAnalysis analyzeId(const Capture &c, const FrameKey &key, double t0 = -
         return true;
     };
 
-    /* counters: byte, nibbles and 2..3 bit fields inside a byte, Intel order,
-     * stepping by +1 (mod 2^bits) in at least 90 % of frames. The best
-     * scoring field wins, the wider one on a tie (the low nibble of a byte
-     * counter counts too); a byte may hold more than one counter. */
-    if (n >= 8)
-        for (int b = 0; b < L; b++)
-            for (;;)
-            {
-                const int cand[][2] = { { 0, 8 }, { 0, 4 }, { 4, 4 }, { 0, 3 }, { 4, 3 }, { 0, 2 }, { 2, 2 }, { 4, 2 }, { 6, 2 } };
-                double bestScore = 0;
-                int bestLsb = -1, bestLen = 0;
-                for (const auto &cd : cand)
-                {
-                    int lsb = b * 8 + cd[0], len = cd[1];
-                    if (!rangeFree(lsb, len)) continue;
-                    std::vector<uint64_t> v;
-                    for (int i = 0; i < n; i++) v.push_back(extractBits(s.d[size_t(i)], L, lsb, len, false));
-                    uint64_t step;
-                    double sc = detail::counterScore(v, len, step);
-                    std::set<uint64_t> distinct(v.begin(), v.end());
-                    if (step != 1 || sc < 0.9 || distinct.size() < std::min<size_t>(4, size_t(1) << len)) continue;
-                    if (sc > bestScore + 1e-9 || (std::fabs(sc - bestScore) <= 1e-9 && len > bestLen))
-                    {
-                        bestScore = sc; bestLsb = lsb; bestLen = len;
-                    }
-                }
-                if (bestLsb < 0) break;
-                Field f;
-                f.kind = FieldKind::Counter;
-                f.startBit = bestLsb; f.length = bestLen;
-                std::set<uint64_t> distinct;
-                for (int i = 0; i < n; i++) distinct.insert(extractBits(s.d[size_t(i)], L, bestLsb, bestLen, false));
-                f.minRaw = *distinct.begin(); f.maxRaw = *distinct.rbegin(); f.unique = int(distinct.size());
-                char note[96];
-                snprintf(note, sizeof(note), "+1 per frame in %.0f %% of frames, %d bits", bestScore * 100, bestLen);
-                f.note = note;
-                a.fields.push_back(f);
-                markUsed(bestLsb, bestLen);
-            }
-
-    /* checksums, after the counters (a counter byte would also pass as the SUM
-     * of a checksum byte): a byte equal to f(other bytes) [+ constant] in
-     * >= 98 % of frames */
+    /* checksums: a byte equal to f(other bytes) [+ constant] in >= 98 % of
+     * frames. Before the counters, whose 2-3 bit candidates can match bits of
+     * a checksum byte by chance; a counter byte is skipped instead, because a
+     * symmetric XOR or SUM relation also holds for it. */
+    auto counterLike = [&](int b) {
+        const int cand[][2] = { { 0, 8 }, { 0, 4 }, { 4, 4 } };
+        for (const auto &cd : cand)
+        {
+            std::vector<uint64_t> v;
+            for (int i = 0; i < n; i++) v.push_back(extractBits(s.d[size_t(i)], L, b * 8 + cd[0], cd[1], false));
+            uint64_t step;
+            if (detail::counterScore(v, cd[1], step) >= 0.9 && step == 1) return true;
+        }
+        return false;
+    };
     bool checksumFound = false;
     if (n >= 8 && L >= 2)
         for (int cb = L - 1; cb >= 0 && !checksumFound; cb--)       /* usually the last byte; an XOR relation */
         {                                                            /* would match every byte in it, so stop at one */
-            if (a.bytes[size_t(cb)].unique < 3 || !rangeFree(cb * 8, 8)) continue;
+            if (a.bytes[size_t(cb)].unique < 3 || !rangeFree(cb * 8, 8) || counterLike(cb)) continue;
             struct Algo { const char *name; int type; };
             const Algo algos[] = { { "XOR", 0 }, { "SUM", 1 }, { "CRC-8 SAE J1850", 2 }, { "CRC-8 AUTOSAR (0x2F)", 3 } };
             for (const Algo &al : algos)
@@ -435,6 +431,161 @@ inline IdAnalysis analyzeId(const Capture &c, const FrameKey &key, double t0 = -
                 }
             }
         }
+
+    /* counters: byte, nibbles and 2..3 bit fields inside a byte, Intel order,
+     * stepping by +1 (mod 2^bits) in at least 90 % of frames. The best
+     * scoring field wins, the wider one on a tie (the low nibble of a byte
+     * counter counts too); a byte may hold more than one counter. */
+    if (n >= 8)
+        for (int b = 0; b < L; b++)
+            for (;;)
+            {
+                const int cand[][2] = { { 0, 8 }, { 0, 4 }, { 4, 4 }, { 0, 3 }, { 4, 3 }, { 0, 2 }, { 2, 2 }, { 4, 2 }, { 6, 2 } };
+                double bestScore = 0;
+                int bestLsb = -1, bestLen = 0;
+                for (const auto &cd : cand)
+                {
+                    int lsb = b * 8 + cd[0], len = cd[1];
+                    if (!rangeFree(lsb, len)) continue;
+                    std::vector<uint64_t> v;
+                    for (int i = 0; i < n; i++) v.push_back(extractBits(s.d[size_t(i)], L, lsb, len, false));
+                    uint64_t step;
+                    double sc = detail::counterScore(v, len, step);
+                    std::set<uint64_t> distinct(v.begin(), v.end());
+                    if (step != 1 || sc < 0.9 || distinct.size() < std::min<size_t>(4, size_t(1) << len)) continue;
+                    /* the low bits of a ramp (a value growing by a constant
+                     * other than 1, e.g. +5) also count +1: if a wider field
+                     * from the same bit steps by a constant, it is a signal */
+                    bool ramp = false;
+                    for (int w = len + 1; w <= 16 && lsb + w <= L * 8 && !ramp; w++)
+                    {
+                        std::vector<uint64_t> vw;
+                        for (int i = 0; i < n; i++) vw.push_back(extractBits(s.d[size_t(i)], L, lsb, w, false));
+                        uint64_t stepW;
+                        ramp = detail::counterScore(vw, w, stepW) >= 0.9 && stepW != 1;
+                    }
+                    if (ramp) continue;
+                    if (sc > bestScore + 1e-9 || (std::fabs(sc - bestScore) <= 1e-9 && len > bestLen))
+                    {
+                        bestScore = sc; bestLsb = lsb; bestLen = len;
+                    }
+                }
+                if (bestLsb < 0) break;
+                Field f;
+                f.kind = FieldKind::Counter;
+                f.startBit = bestLsb; f.length = bestLen;
+                std::set<uint64_t> distinct;
+                for (int i = 0; i < n; i++) distinct.insert(extractBits(s.d[size_t(i)], L, bestLsb, bestLen, false));
+                f.minRaw = *distinct.begin(); f.maxRaw = *distinct.rbegin(); f.unique = int(distinct.size());
+                char note[96];
+                snprintf(note, sizeof(note), "+1 per frame in %.0f %% of frames, %d bits", bestScore * 100, bestLen);
+                f.note = note;
+                a.fields.push_back(f);
+                markUsed(bestLsb, bestLen);
+            }
+
+    /* multiplexer: a byte or nibble with 2..32 values that changes often,
+     * while the other changing bytes rarely change between frames with the
+     * same value of it (each value selects a page with its own layout).
+     * Ratio of the change rates "same value" / "consecutive" below 0.5. */
+    if (n >= 16 && a.muxFilter < 0)
+    {
+        /* a page selector that cycles 0, 1, 2, ... was taken for a counter
+         * above, so counter fields are candidates too; checksum bytes depend
+         * on everything and are no evidence */
+        std::set<int> checksumBytes;
+        for (const Field &f : a.fields) if (f.kind == FieldKind::Checksum) checksumBytes.insert(f.startBit / 8);
+        auto candidateFree = [&](int lsb, int len) {
+            for (int i = 0; i < len; i++)
+            {
+                int pos = lsb + i;
+                if (pos >= L * 8) return false;
+                if (!used[size_t(pos)]) continue;
+                bool inCounter = false;
+                for (const Field &f : a.fields)
+                    if (f.kind == FieldKind::Counter && pos >= f.startBit && pos < f.startBit + f.length) inCounter = true;
+                if (!inCounter) return false;
+            }
+            return true;
+        };
+        double bestRatio = 0.5;
+        int bestLsb = -1, bestLen = 0;
+        for (int b = 0; b < L; b++)
+        {
+            const int cand[][2] = { { 0, 8 }, { 0, 4 }, { 4, 4 } };
+            for (const auto &cd : cand)
+            {
+                int lsb = b * 8 + cd[0], len = cd[1];
+                if (!candidateFree(lsb, len)) continue;
+                std::vector<uint64_t> v(size_t(n), 0);
+                std::set<uint64_t> distinct;
+                int changes = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    v[size_t(i)] = extractBits(s.d[size_t(i)], L, lsb, len, false);
+                    distinct.insert(v[size_t(i)]);
+                    if (i && v[size_t(i)] != v[size_t(i - 1)]) changes++;
+                }
+                if (distinct.size() < 2 || distinct.size() > 32 || changes < 0.3 * (n - 1)) continue;
+                double sumU = 0, sumC = 0;
+                int used_ = 0;
+                for (int o = 0; o < L; o++)
+                {
+                    if (o == b || checksumBytes.count(o)) continue;
+                    int cu = 0;
+                    for (int i = 1; i < n; i++) if (s.d[size_t(i)][o] != s.d[size_t(i - 1)][o]) cu++;
+                    double ru = double(cu) / (n - 1);
+                    if (ru < 0.2) continue;                   /* byte barely changes anyway */
+                    std::map<uint64_t, int> last;
+                    int pairs = 0, cc = 0;
+                    for (int i = 0; i < n; i++)
+                    {
+                        auto it = last.find(v[size_t(i)]);
+                        if (it != last.end())
+                        {
+                            pairs++;
+                            if (s.d[size_t(i)][o] != s.d[size_t(it->second)][o]) cc++;
+                        }
+                        last[v[size_t(i)]] = i;
+                    }
+                    if (!pairs) continue;
+                    sumU += ru;
+                    sumC += double(cc) / pairs;
+                    used_++;
+                }
+                if (!used_) continue;
+                double ratio = sumC / sumU;
+                if (ratio < bestRatio - 1e-9)
+                {
+                    bestRatio = ratio; bestLsb = lsb; bestLen = len;
+                }
+            }
+        }
+        if (bestLsb >= 0)
+        {
+            std::set<uint64_t> distinct;
+            for (int i = 0; i < n; i++) distinct.insert(extractBits(s.d[size_t(i)], L, bestLsb, bestLen, false));
+            /* a counter field inside it was the selector */
+            a.fields.erase(std::remove_if(a.fields.begin(), a.fields.end(), [&](const Field &x) {
+                               return x.kind == FieldKind::Counter && x.startBit < bestLsb + bestLen && bestLsb < x.startBit + x.length;
+                           }), a.fields.end());
+            Field f;
+            f.kind = FieldKind::Multiplexer;
+            f.startBit = bestLsb; f.length = bestLen;
+            f.minRaw = *distinct.begin(); f.maxRaw = *distinct.rbegin(); f.unique = int(distinct.size());
+            std::string vals;
+            for (uint64_t x : distinct) vals += (vals.empty() ? "" : " ") + std::to_string(x);
+            char note[160];
+            snprintf(note, sizeof(note), "selects the layout of the other bytes (change ratio %.2f); values %s; analyze each value separately",
+                     bestRatio, vals.c_str());
+            f.note = note;
+            a.fields.push_back(f);
+            markUsed(bestLsb, bestLen);
+            a.muxStart = bestLsb;
+            a.muxLength = bestLen;
+            a.muxValues.assign(distinct.begin(), distinct.end());
+        }
+    }
 
     /* remaining bits: flags and signal segments. Segmentation after READ
      * (Marchetti, Stabili 2018): inside a signal the bit flip rate rises from
@@ -532,6 +683,12 @@ inline std::string describe(const IdAnalysis &a)
     char line[256];
     snprintf(line, sizeof(line), "ID %s: %zu frames of %d bytes\n", keyText(a.key).c_str(), a.frames, a.length);
     out += line;
+    if (a.muxFilter >= 0)
+    {
+        snprintf(line, sizeof(line), "only frames with the multiplexer at bit %d, %d bits = %lld\n", a.muxStart, a.muxLength,
+                 static_cast<long long>(a.muxFilter));
+        out += line;
+    }
     out += "byte  min  max  uniq  changes  entropy  flip rate per bit (bit7..bit0)\n";
     for (size_t b = 0; b < a.bytes.size(); b++)
     {
@@ -655,6 +812,8 @@ struct DbcSignal {
     std::string name;
     int         startBit = 0, length = 8;
     bool        bigEndian = false, isSigned = false;
+    int         muxRole = 0;      /* 0 plain, 1 the multiplexer (M), 2 multiplexed (m<muxValue>) */
+    int         muxValue = 0;
     double      factor = 1, offset = 0, minV = 0, maxV = 0;
     std::string unit, comment;
 };
@@ -686,8 +845,10 @@ inline std::string toDbc(const std::vector<DbcMessage> &msgs)
         out += line;
         for (const DbcSignal &s : m.signals_)
         {
-            snprintf(line, sizeof(line), " SG_ %s : %d|%d@%d%c (%.10g,%.10g) [%.10g|%.10g] \"%s\" Vector__XXX\n", dbcIdent(s.name).c_str(),
-                     s.startBit, s.length, s.bigEndian ? 0 : 1, s.isSigned ? '-' : '+', s.factor, s.offset, s.minV, s.maxV, s.unit.c_str());
+            std::string mux = s.muxRole == 1 ? " M" : s.muxRole == 2 ? " m" + std::to_string(s.muxValue) : "";
+            snprintf(line, sizeof(line), " SG_ %s%s : %d|%d@%d%c (%.10g,%.10g) [%.10g|%.10g] \"%s\" Vector__XXX\n", dbcIdent(s.name).c_str(),
+                     mux.c_str(), s.startBit, s.length, s.bigEndian ? 0 : 1, s.isSigned ? '-' : '+', s.factor, s.offset, s.minV, s.maxV,
+                     s.unit.c_str());
             out += line;
             if (!s.comment.empty())
             {

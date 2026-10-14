@@ -117,6 +117,13 @@ int main(int argc, char **argv)
     an.num["start_s"] = 0; an.num["end_s"] = 4.995;
     r = run("analyze_id", an, cap, lim);
     CHECK(has(r.text, "500 frames"));
+    Args mx; mx.str["id"] = "123"; mx.num["mux_start"] = 8; mx.num["mux_length"] = 8; mx.num["mux_value"] = 1;
+    r = run("analyze_id", mx, cap, lim);                                  /* byte 1 is 1 from 5 s on */
+    CHECK(!r.error && has(r.text, "500 frames") && has(r.text, "multiplexer at bit 8, 8 bits = 1"));
+    mx.num.erase("mux_length");
+    CHECK(run("analyze_id", mx, cap, lim).error);
+    mx.num["mux_length"] = 8; mx.num.erase("mux_value");
+    CHECK(run("analyze_id", mx, cap, lim).error);
     Args bad; bad.str["id"] = "7FF";
     r = run("analyze_id", bad, cap, lim);
     CHECK(r.error && has(r.text, "not in the capture"));

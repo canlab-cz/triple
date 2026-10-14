@@ -14,7 +14,7 @@ has nine commits:
 | `f67667d` | Add Print Log to the File menu |
 | `3a41e68` | Triple: zero padding for CAN FD lengths between DLC steps |
 | `a5f04bf` | Triple: CAN3 bitrate pairs outside the firmware table as raw timing |
-| `2c1a049` | Add Signal Finder and AI Assistant windows (reverse engineering; can be left out or split) |
+| `6ffd6aa` | Add Signal Finder and AI Assistant windows (reverse engineering; can be left out or split) |
 
 They can go in one PR or as separate ones; only the first commit is
 specific to the Triple, the tool windows and the PP2CAN log format work

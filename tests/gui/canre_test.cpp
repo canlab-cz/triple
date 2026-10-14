@@ -24,6 +24,8 @@ static uint8_t crc8j1850(const uint8_t *p, int n)
     return uint8_t(c ^ 0xFF);
 }
 
+static bool has(const std::string &s, const char *w) { return s.find(w) != std::string::npos; }
+
 static const Field *findField(const IdAnalysis &a, FieldKind k, int start)
 {
     for (const Field &f : a.fields)
@@ -69,6 +71,24 @@ int main()
             uint8_t z[2] = { 1, 2 };
             cap.add(us + 7000, 0, 0x400, false, 2, z);
         }
+        {                                                 /* multiplexed: byte 0 page 0..3 (cycles, counter-like) */
+            uint8_t m[8] = { uint8_t(i % 4), 0, 0, 0, 0, 0, 0, 0 };
+            int k = i / 4;
+            if (i % 4 == 0) { for (int b = 1; b < 8; b++) m[b] = uint8_t(0x11 * b); }
+            if (i % 4 == 1) { unsigned v = unsigned(1000 + 800 * std::sin(k * 0.05)); m[1] = uint8_t(v); m[2] = uint8_t(v >> 8); }
+            if (i % 4 == 2) { m[3] = uint8_t(40 + (k / 100) % 5); for (int b = 4; b < 8; b++) m[b] = 0xFF; }
+            cap.add(us + 1000, 0, 0x500, false, 8, m);
+        }
+        {                                                 /* ramp +5 per frame, Intel bytes 0-1: its low bits count +1 but it is no counter */
+            unsigned rv = unsigned(i * 5);
+            uint8_t rr[2] = { uint8_t(rv), uint8_t(rv >> 8) };
+            cap.add(us + 1700, 0, 0x520, false, 2, rr);
+        }
+        {                                                 /* counter + checksum over constant data: not a multiplexer */
+            uint8_t q[4] = { uint8_t(i & 0x0F), 0x12, 0x34, 0 };
+            q[3] = uint8_t(q[0] ^ q[1] ^ q[2]);
+            cap.add(us + 1500, 0, 0x510, false, 4, q);
+        }
     }
 
     /* bit extraction and DBC conventions */
@@ -84,7 +104,7 @@ int main()
 
     /* overview */
     std::vector<IdInfo> ids = listIds(cap);
-    CHECK(ids.size() == 4);
+    CHECK(ids.size() == 7);
     for (const IdInfo &i : ids)
     {
         if (i.key.id == 0x100)
@@ -96,7 +116,7 @@ int main()
         if (i.key.id == 0x300) CHECK(i.key.bus == 1);
         if (i.key.id == 0x400) CHECK(i.firstS >= 10.0);
     }
-    CHECK(std::fabs(cap.spanSeconds() - 19.99) < 0.001);         /* last frame added: 0x100 at 19.99 s */
+    CHECK(cap.spanSeconds() > 19.99 && cap.spanSeconds() < 19.995); /* last frame added: 0x510 at 19.9915 s */
 
     /* ID 0x100 */
     FrameKey k100; k100.id = 0x100;
@@ -142,6 +162,34 @@ int main()
     for (const BitChange &bc : w.bits)                       /* the noisy bit is not a change */
         CHECK(!(bc.key.id == 0x300 && bc.bit == 0));
 
+    /* multiplexer */
+    FrameKey k500; k500.id = 0x500;
+    IdAnalysis mux = analyzeId(cap, k500);
+    std::printf("%s", describe(mux).c_str());
+    f = findField(mux, FieldKind::Multiplexer, 0);
+    CHECK(f && (f->length == 8 || f->length == 4) && f->unique == 4);
+    CHECK(mux.muxStart == 0 && mux.muxValues.size() == 4);
+    CHECK(!findField(mux, FieldKind::Counter, 0));               /* the page selector is not reported as a counter */
+    IdAnalysis p1 = analyzeId(cap, k500, -1, -1, mux.muxStart, mux.muxLength, 1);
+    std::printf("%s", describe(p1).c_str());
+    CHECK(p1.frames == 500 && p1.muxFilter == 1 && has(describe(p1), "only frames with the multiplexer"));
+    f = findField(p1, FieldKind::Signal, 8);                    /* page 1: 16 bit Intel sine at bytes 1-2 */
+    CHECK(f && !f->bigEndian && f->length >= 10 && f->minRaw >= 200 && f->maxRaw <= 1800);
+    IdAnalysis p0 = analyzeId(cap, k500, -1, -1, mux.muxStart, mux.muxLength, 0);
+    CHECK(p0.frames == 500 && findField(p0, FieldKind::Constant, 8) && findField(p0, FieldKind::Constant, 56));
+
+    FrameKey k510; k510.id = 0x510;
+    IdAnalysis cc = analyzeId(cap, k510);
+    std::printf("%s", describe(cc).c_str());
+    CHECK(cc.muxStart < 0 && findField(cc, FieldKind::Counter, 0) && findField(cc, FieldKind::Checksum, 24));
+
+    FrameKey k520; k520.id = 0x520;
+    IdAnalysis rp = analyzeId(cap, k520);
+    std::printf("%s", describe(rp).c_str());
+    f = findField(rp, FieldKind::Signal, 0);
+    CHECK(f && !f->bigEndian && f->length == 14 && f->maxRaw == 1999 * 5);
+    CHECK(!findField(rp, FieldKind::Counter, 0));
+
     /* DBC export */
     DbcMessage m;
     m.key = k100; m.name = "Engine 1"; m.length = 8;
@@ -149,14 +197,19 @@ int main()
     s1.comment = "found by \"READ\"";
     DbcSignal s2; s2.name = "ramp"; s2.startBit = 24; s2.length = 14; s2.isSigned = true;
     m.signals_ = { s1, s2 };
+    DbcMessage mm; mm.key = k500; mm.name = "Pages"; mm.length = 8;
+    DbcSignal sel; sel.name = "page"; sel.startBit = 0; sel.length = 8; sel.muxRole = 1;
+    DbcSignal pg1; pg1.name = "level"; pg1.startBit = 8; pg1.length = 16; pg1.muxRole = 2; pg1.muxValue = 1;
+    mm.signals_ = { sel, pg1 };
     DbcMessage mx; mx.key = kx; mx.name = "Ext"; mx.length = 4;
-    std::string dbc = toDbc({ m, mx });
+    std::string dbc = toDbc({ m, mx, mm });
     std::printf("%s", dbc.c_str());
     CHECK(dbc.find("BO_ 256 Engine_1: 8 Vector__XXX") != std::string::npos);
     CHECK(dbc.find(" SG_ rpm : 11|12@0+ (0.5,0) [0|2000] \"rpm\" Vector__XXX") != std::string::npos);
     CHECK(dbc.find(" SG_ ramp : 24|14@1- (1,0) [0|0] \"\" Vector__XXX") != std::string::npos);
     CHECK(dbc.find("BO_ 2566853172 Ext: 4") != std::string::npos);            /* 0x18FF1234 | 0x80000000 */
     CHECK(dbc.find("CM_ SG_ 256 rpm \"found by 'READ'\";") != std::string::npos);
+    CHECK(dbc.find(" SG_ page M : 0|8@1+") != std::string::npos && dbc.find(" SG_ level m1 : 8|16@1+") != std::string::npos);
 
     std::printf("%s (%d failures)\n", fails ? "CANRE TEST FAILED" : "CANRE TEST PASSED", fails);
     return fails ? 1 : 0;

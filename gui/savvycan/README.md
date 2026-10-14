@@ -68,7 +68,11 @@ To try it without a CANopen device, run the simulated node from
 * **Signal Finder** (RE Tools) analyzes the captured frames per ID: period
   and jitter, a bit flip heatmap, and the fields it finds: rolling
   counters, checksums (XOR, SUM, CRC-8 SAE J1850 and AUTOSAR, with a
-  constant), constant bytes, flags, and signal candidates. Signals are
+  constant), constant bytes, flags, multiplexers, and signal candidates.
+  A multiplexer is a byte or nibble whose value selects the layout of the
+  other bytes; the Page list then analyzes one value at a time, and fields
+  added from a page are written as multiplexed DBC signals (M / m<n>).
+  Signals are
   segmented by bit flip rates (inside a signal the flip rate rises from MSB
   to LSB) in both byte orders, and the byte order that gives the longer
   field wins. The selected field is plotted over time. Checked fields go

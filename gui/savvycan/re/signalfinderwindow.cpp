@@ -3,6 +3,7 @@
 #include "signalfinderwindow.h"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
@@ -50,12 +51,19 @@ SignalFinderWindow::SignalFinderWindow(const QVector<GuiFrame> *frameList, QWidg
     QPushButton *refreshBtn = new QPushButton(tr("Analyze capture"), this);
     refreshBtn->setToolTip(tr("Takes the frames captured so far; the time range limits the per-ID analysis"));
     summary = new QLabel(this);
+    summary->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);   /* long status lines must not widen the window */
+    pageCombo = new QComboBox(this);
+    pageCombo->setToolTip(tr("For a multiplexed ID: analyze only the frames with one multiplexer value"));
+    pageCombo->addItem(tr("all frames"));
+    pageCombo->setEnabled(false);
     QHBoxLayout *top = new QHBoxLayout;
     top->addWidget(new QLabel(tr("Time range (s, empty = all):"), this));
     top->addWidget(fromEdit);
     top->addWidget(new QLabel("-", this));
     top->addWidget(toEdit);
     top->addWidget(refreshBtn);
+    top->addWidget(new QLabel(tr("Page:"), this));
+    top->addWidget(pageCombo);
     top->addWidget(summary, 1);
 
     /* --- IDs and fields ---------------------------------------------------- */
@@ -157,6 +165,7 @@ SignalFinderWindow::SignalFinderWindow(const QVector<GuiFrame> *frameList, QWidg
     layout->addWidget(tabs);
 
     connect(refreshBtn, &QPushButton::clicked, this, &SignalFinderWindow::refresh);
+    connect(pageCombo, QOverload<int>::of(&QComboBox::activated), this, &SignalFinderWindow::pageChanged);
     connect(idTable, &QTableWidget::itemSelectionChanged, this, &SignalFinderWindow::idSelected);
     connect(fieldTable, &QTableWidget::itemSelectionChanged, this, &SignalFinderWindow::fieldSelected);
     connect(addBtn, &QPushButton::clicked, this, &SignalFinderWindow::addToDbc);
@@ -225,9 +234,36 @@ void SignalFinderWindow::idSelected()
         return;
     }
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    current = canre::analyzeId(cap, ids[size_t(idx)].key, t0, t1);
+    currentKey = ids[size_t(idx)].key;
+    current = canre::analyzeId(cap, currentKey, t0, t1);
     QApplication::restoreOverrideCursor();
 
+    /* multiplexed ID: offer its pages */
+    muxStart = current.muxStart;
+    muxLength = current.muxLength;
+    pageCombo->clear();
+    pageCombo->addItem(tr("all frames"), -1);
+    for (uint64_t v : current.muxValues)
+        pageCombo->addItem(tr("multiplexer = %1").arg(qulonglong(v)), qlonglong(v));
+    pageCombo->setEnabled(!current.muxValues.empty());
+    showAnalysis();
+}
+
+void SignalFinderWindow::pageChanged()
+{
+    if (muxStart < 0) return;
+    double t0, t1;
+    timeRange(t0, t1);
+    qlonglong v = pageCombo->currentData().toLongLong();
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    current = v < 0 ? canre::analyzeId(cap, currentKey, t0, t1)
+                    : canre::analyzeId(cap, currentKey, t0, t1, muxStart, muxLength, v);
+    QApplication::restoreOverrideCursor();
+    showAnalysis();
+}
+
+void SignalFinderWindow::showAnalysis()
+{
     heatmap->setRowCount(current.length);
     QStringList rows;
     for (int b = 0; b < current.length; b++)
@@ -255,10 +291,17 @@ void SignalFinderWindow::idSelected()
         const canre::Field &f = current.fields[size_t(r)];
         QTableWidgetItem *use = new QTableWidgetItem;
         use->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
-        use->setCheckState(f.kind == canre::FieldKind::Signal || f.kind == canre::FieldKind::Counter ||
-                                   f.kind == canre::FieldKind::Checksum ? Qt::Checked : Qt::Unchecked);
+        /* a multiplexed ID seen as a whole mixes its pages: only the
+         * multiplexer is meaningful there, the rest per page */
+        bool wholeMux = !current.muxValues.empty() && current.muxFilter < 0;
+        bool useIt = f.kind == canre::FieldKind::Multiplexer ||
+                     (!wholeMux && (f.kind == canre::FieldKind::Signal || f.kind == canre::FieldKind::Counter ||
+                                    f.kind == canre::FieldKind::Checksum));
+        use->setCheckState(useIt ? Qt::Checked : Qt::Unchecked);
         fieldTable->setItem(r, 0, use);
-        fieldTable->setItem(r, 1, new QTableWidgetItem(QString("%1_%2").arg(canre::kindName(f.kind)).arg(f.startBit)));
+        QString defName = QString("%1_%2").arg(canre::kindName(f.kind)).arg(f.startBit);
+        if (current.muxFilter >= 0 && f.kind != canre::FieldKind::Multiplexer) defName += QString("_p%1").arg(current.muxFilter);
+        fieldTable->setItem(r, 1, new QTableWidgetItem(defName));
         auto ro = [](const QString &t) { QTableWidgetItem *i = new QTableWidgetItem(t); i->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable); return i; };
         fieldTable->setItem(r, 2, ro(canre::kindName(f.kind)));
         fieldTable->setItem(r, 3, ro(QString::number(f.startBit)));
@@ -268,7 +311,9 @@ void SignalFinderWindow::idSelected()
         fieldTable->setItem(r, 7, ro(QString::number(f.unique)));
         fieldTable->setItem(r, 8, ro(QString::fromStdString(f.note)));
     }
-    summary->setText(tr("%1: %2 frames of %3 bytes analyzed").arg(keyStr(current.key)).arg(current.frames).arg(current.length));
+    summary->setText(tr("%1: %2 frames of %3 bytes analyzed%4").arg(keyStr(current.key)).arg(current.frames).arg(current.length)
+                         .arg(current.muxFilter >= 0 ? tr(", multiplexer = %1").arg(current.muxFilter)
+                              : current.muxValues.empty() ? QString() : tr("; multiplexed, pick a page")));
 }
 
 void SignalFinderWindow::fieldSelected()
@@ -325,9 +370,27 @@ void SignalFinderWindow::addToDbc()
         s.minV = double(f.minRaw);
         s.maxV = double(f.maxRaw);
         s.comment = std::string(canre::kindName(f.kind)) + (f.note.empty() ? "" : ": " + f.note);
+        if (f.kind == canre::FieldKind::Multiplexer) s.muxRole = 1;
+        else if (current.muxFilter >= 0)
+        {
+            s.muxRole = 2;
+            s.muxValue = int(current.muxFilter);
+        }
         auto same = std::find_if(m->signals_.begin(), m->signals_.end(), [&](const canre::DbcSignal &o) { return o.name == s.name; });
         if (same != m->signals_.end()) *same = s;
         else m->signals_.push_back(s);
+    }
+    /* signals of one page need the multiplexer signal in the message */
+    if (current.muxFilter >= 0 && std::none_of(m->signals_.begin(), m->signals_.end(), [](const canre::DbcSignal &x) { return x.muxRole == 1; }))
+    {
+        canre::DbcSignal mx;
+        mx.name = "multiplexer_" + std::to_string(current.muxStart);
+        mx.startBit = current.muxStart;
+        mx.length = current.muxLength;
+        mx.muxRole = 1;
+        mx.maxV = double((uint64_t(1) << current.muxLength) - 1);
+        mx.comment = "multiplexer: selects the layout of the other bytes";
+        m->signals_.insert(m->signals_.begin(), mx);
     }
     dbcView->setPlainText(QString::fromStdString(canre::toDbc(dbc)));
 }

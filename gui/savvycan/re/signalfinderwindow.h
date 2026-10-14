@@ -20,6 +20,7 @@
 #include "canre.h"
 #include "savvycompat.h"
 
+class QComboBox;
 class QCustomPlot;
 class QDoubleSpinBox;
 class QLabel;
@@ -38,12 +39,14 @@ private slots:
     void refresh();
     void idSelected();
     void fieldSelected();
+    void pageChanged();
     void addToDbc();
     void saveDbc();
     void compare();
 
 private:
     bool timeRange(double &t0, double &t1) const;
+    void showAnalysis();
 
     const QVector<GuiFrame> *frames;
     canre::Capture cap;
@@ -54,6 +57,9 @@ private:
     QLineEdit      *fromEdit;
     QLineEdit      *toEdit;
     QLabel         *summary;
+    QComboBox      *pageCombo;
+    canre::FrameKey currentKey;
+    int muxStart = -1, muxLength = 0;
     QTableWidget   *idTable;
     QTableWidget   *heatmap;
     QTableWidget   *fieldTable;
