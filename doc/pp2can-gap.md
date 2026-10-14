@@ -23,7 +23,7 @@ or missing details, **no** = not available.
 | Find | Frame Search | yes | |
 | File logging (long captures) | Start Continuous Logging | yes | Many formats (CRTD, GVRET CSV, candump, BLF, Vector ASC, ...) |
 | F1..F8 markers in the log | none | no | PP2CAN also logs the adapter's trigger input; needs the marker message decoded (firmware source) |
-| Save log / Print | Save Log File, Save Decoded Frames (CSV) | partial | No printing |
+| Save log / Print | Save Log File, Save Decoded Frames (CSV), Print Log (added) | yes | Prints the list as shown or the selected frames, with preview |
 | Information window | Connection window console | yes | Firmware version, settings, error counters |
 
 ## Sending
@@ -87,6 +87,7 @@ Ranked by value for CANLAB users and by how much is unblocked today.
 3. ~~Response meter~~, 4. ~~Data / bit / ASCII sender~~, 5. ~~CAN
    calculator~~: done 2026-10-14, plus PP2CAN log files in Playback (the
    file sender) and File > Save Log as PP2CAN.
+6. ~~Printing~~: done 2026-10-14, File > Print Log with preview.
 
 Blocked on the firmware source (see `doc/protocol.md`):
 

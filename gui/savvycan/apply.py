@@ -40,7 +40,7 @@ for f in ("busstatswindow.h", "busstatswindow.cpp", "canopenwindow.h", "canopenw
           "savvycompat.h", "canidcalc.h", "canopen_eds.h", "cancalcwindow.h", "cancalcwindow.cpp",
           "responsemeterwindow.h", "responsemeterwindow.cpp", "datapanelwindow.h", "datapanelwindow.cpp"):
     shutil.copy(os.path.join(R, "gui", "savvycan", "re", f), os.path.join(S, "re", f))
-for f in ("pp2canlog.h", "pp2canlog.cpp", "pp2canlogfmt.h"):
+for f in ("pp2canlog.h", "pp2canlog.cpp", "pp2canlogfmt.h", "logprinter.h", "logprinter.cpp", "logprintlayout.h"):
     shutil.copy(os.path.join(R, "gui", "savvycan", f), os.path.join(S, f))
 print("copied connection sources into", os.path.join(S, "connections"))
 
@@ -71,6 +71,10 @@ if os.path.exists(os.path.join(S, "CMakeLists.txt")):
           "    framefileio.cpp framefileio.h\n",
           "    framefileio.cpp framefileio.h\n"
           "    pp2canlog.cpp pp2canlog.h pp2canlogfmt.h\n")
+    patch("CMakeLists.txt",
+          "    pp2canlog.cpp pp2canlog.h pp2canlogfmt.h\n",
+          "    pp2canlog.cpp pp2canlog.h pp2canlogfmt.h\n"
+          "    logprinter.cpp logprinter.h logprintlayout.h\n")
     patch("CMakeLists.txt",
           "    re/canopenwindow.cpp re/canopenwindow.h\n",
           "    re/canopenwindow.cpp re/canopenwindow.h\n"
@@ -114,6 +118,12 @@ patch("SavvyCAN.pro",
 patch("SavvyCAN.pro",
       "    framefileio.h" + BS,
       "    framefileio.h" + BS + "    pp2canlog.h" + BS + "    pp2canlogfmt.h" + BS)
+patch("SavvyCAN.pro",
+      "    pp2canlog.cpp" + BS,
+      "    pp2canlog.cpp" + BS + "    logprinter.cpp" + BS)
+patch("SavvyCAN.pro",
+      "    pp2canlogfmt.h" + BS,
+      "    pp2canlogfmt.h" + BS + "    logprinter.h" + BS + "    logprintlayout.h" + BS)
 
 # PP2CAN logs in the Load Log File dialog and autodetection (and therefore
 # in Playback, the file sender). Filter and dispatch go after the last
@@ -290,5 +300,28 @@ patch("mainwindow.cpp",
       "        PP2CANLog::saveWithDialog(this, model->getListReference());\n"
       "    });\n"
       "    connect(ui->menuSend_Frames->addAction(tr(\"Data Panel\")), &QAction::triggered, this, [this]() {\n")
+
+# File > Print Log..., placed with Save Log as PP2CAN before Preferences
+patch("mainwindow.cpp",
+      '#include "pp2canlog.h"\n',
+      '#include "pp2canlog.h"\n#include "logprinter.h"\n')
+patch("mainwindow.cpp",
+      "    //Automatically create the connection window so it can be updated even if we never opened it.\n"
+      "    connectionWindow = new ConnectionWindow();\n",
+      "    //Automatically create the connection window so it can be updated even if we never opened it.\n"
+      "    connectionWindow = new ConnectionWindow();\n"
+      "    {\n"
+      "        QAction *printLog = new QAction(tr(\"Print Log...\"), this);\n"
+      "        connect(printLog, &QAction::triggered, this, [this]() {\n"
+      "            LogPrinter::printView(this, ui->canFramesView, tr(\"SavvyCAN frame log\"));\n"
+      "        });\n"
+      "        QList<QAction *> fileActions = ui->menuFile->actions();\n"
+      "        int pref = fileActions.indexOf(ui->actionPreferences);\n"
+      "        QAction *before = pref > 0 && fileActions[pref - 1]->isSeparator() ? fileActions[pref - 1] : ui->actionPreferences;\n"
+      "        for (QAction *a : fileActions)\n"
+      "            if (a->text() == tr(\"Save Log as PP2CAN...\"))\n"
+      "                ui->menuFile->insertAction(before, a);\n"
+      "        ui->menuFile->insertAction(before, printLog);\n"
+      "    }\n")
 
 print("done: rebuild SavvyCAN (qmake && make)")

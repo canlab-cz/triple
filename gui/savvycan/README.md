@@ -50,8 +50,13 @@ What the connection provides:
     ID, from hardware timestamps (watch mode) or with periodic requests.
   * **CAN Calculator** (RE Tools): identifier as 29-bit, 11+18 and
     MCP2510/2515 or SJA1000 register values, editable in every field.
+  * **Print Log** (File): prints the frame list as shown (visible
+    columns, current filters) or only the selected frames, with a print
+    preview; long CAN FD data wraps instead of being cut off.
 
 ![Playback replaying a PP2CAN log](../../doc/img/savvycan-file-sender.png)
+
+![Print preview of a log with CAN FD frames](../../doc/img/savvycan-print-log.png)
 
 To try it without a CANopen device, run the simulated node from
 `tools/canopen_sim.py` on a Linux SocketCAN interface on the same bus:

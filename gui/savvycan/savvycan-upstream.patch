@@ -1,5 +1,5 @@
 diff --git a/SavvyCAN.pro b/SavvyCAN.pro
-index d7197dc..b7605ca 100644
+index d7197dc..8bdb3ef 100644
 --- a/SavvyCAN.pro
 +++ b/SavvyCAN.pro
 @@ -28,6 +28,8 @@ SOURCES += main.cpp\
@@ -11,15 +11,16 @@ index d7197dc..b7605ca 100644
      connections/mqtt_bus.cpp \
      dbc/dbcnodeduplicateeditor.cpp \
      framesenderobject.cpp \
-@@ -55,6 +57,7 @@ SOURCES += main.cpp\
+@@ -55,6 +57,8 @@ SOURCES += main.cpp\
      candatagrid.cpp \
      framesenderwindow.cpp \
      framefileio.cpp \
 +    pp2canlog.cpp \
++    logprinter.cpp \
      mainsettingsdialog.cpp \
      scriptingwindow.cpp \
      scriptcontainer.cpp \
-@@ -103,6 +106,11 @@ SOURCES += main.cpp\
+@@ -103,6 +107,11 @@ SOURCES += main.cpp\
      re/sniffer/SnifferDelegate.cpp \
      connections/newconnectiondialog.cpp \
      re/temporalgraphwindow.cpp \
@@ -31,7 +32,7 @@ index d7197dc..b7605ca 100644
      re/udsfirmwareuploaderwindow.cpp \
      filterutility.cpp \
      pcaplite.cpp
-@@ -114,6 +122,8 @@ HEADERS  += mainwindow.h \
+@@ -114,6 +123,8 @@ HEADERS  += mainwindow.h \
      connections/canlogserver.h \
      connections/canserver.h \
      connections/lawicel_serial.h \
@@ -40,16 +41,18 @@ index d7197dc..b7605ca 100644
      connections/socketcand.h \
      connections/mqtt_bus.h \
      dbc/dbcnodeduplicateeditor.h \
-@@ -149,6 +159,8 @@ HEADERS  += mainwindow.h \
+@@ -149,6 +160,10 @@ HEADERS  += mainwindow.h \
      framesenderwindow.h \
      can_trigger_structs.h \
      framefileio.h \
 +    pp2canlog.h \
 +    pp2canlogfmt.h \
++    logprinter.h \
++    logprintlayout.h \
      config.h \
      mainsettingsdialog.h \
      scriptingwindow.h \
-@@ -198,6 +210,14 @@ HEADERS  += mainwindow.h \
+@@ -198,6 +213,14 @@ HEADERS  += mainwindow.h \
      re/sniffer/SnifferDelegate.h \
      connections/newconnectiondialog.h \
      re/temporalgraphwindow.h \
@@ -1532,11 +1535,447 @@ index e6aaf53..fb9aef5 100644
      qDebug() << "Attempting Canalyzer BLF";
      if (isCanalyzerBLF(filename))
      {
+diff --git a/logprinter.cpp b/logprinter.cpp
+new file mode 100755
+index 0000000..f0b28d7
+--- /dev/null
++++ b/logprinter.cpp
+@@ -0,0 +1,287 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#include "logprinter.h"
++
++#include <QAbstractItemModel>
++#include <QApplication>
++#include <QDateTime>
++#include <QFontDatabase>
++#include <QHeaderView>
++#include <QItemSelectionModel>
++#include <QLocale>
++#include <QPageLayout>
++#include <QPageSize>
++#include <QMessageBox>
++#include <QPainter>
++#include <QPrintPreviewDialog>
++#include <QPrinter>
++#include <QPrinterInfo>
++#include <QPushButton>
++#include <QSet>
++#include <QTableView>
++
++#include <algorithm>
++#include <vector>
++
++#include "logprintlayout.h"
++
++namespace {
++const int ASK_ABOVE_ROWS = 5000;      /* confirm before printing more frames than this */
++const int ROWS_PER_PAGE_GUESS = 55;   /* landscape A4 / Letter at 8 pt, for the estimate */
++const int WIDTH_SAMPLE_ROWS = 5000;   /* rows measured for the natural column widths */
++
++int textWidth(const QFontMetrics &fm, const QString &text)
++{
++    int w = 0;
++    for (const QString &line : text.split('\n'))
++        w = qMax(w, fm.horizontalAdvance(line));
++    return w;
++}
++}
++
++LogPrinter::Table LogPrinter::snapshot(QTableView *view, bool selectedOnly, int maxRows)
++{
++    Table t;
++    QAbstractItemModel *m = view->model();
++    QHeaderView *hh = view->horizontalHeader();
++
++    QVector<int> cols;                                  /* visible columns, on-screen order */
++    for (int v = 0; v < hh->count(); v++)
++    {
++        int c = hh->logicalIndex(v);
++        if (c >= 0 && !view->isColumnHidden(c))
++            cols.append(c);
++    }
++    for (int c : cols)
++        t.headers.append(m->headerData(c, Qt::Horizontal, Qt::DisplayRole).toString());
++
++    QVector<int> rows;
++    if (selectedOnly && view->selectionModel())
++    {
++        QSet<int> seen;
++        for (const QModelIndex &i : view->selectionModel()->selectedIndexes())
++            seen.insert(i.row());
++        rows = QVector<int>(seen.begin(), seen.end());
++        std::sort(rows.begin(), rows.end());
++    }
++    else
++    {
++        int n = m->rowCount();
++        rows.reserve(n);
++        for (int r = 0; r < n; r++)
++            rows.append(r);
++    }
++    if (maxRows >= 0 && rows.size() > maxRows)
++        rows.resize(maxRows);
++
++    t.rows.reserve(rows.size());
++    for (int r : rows)
++    {
++        QStringList cells;
++        for (int c : cols)
++            cells.append(m->index(r, c).data(Qt::DisplayRole).toString().trimmed());
++        t.rows.append(cells);
++    }
++    return t;
++}
++
++/*
++ * Landscape with 10 mm margins on the default printer. A network printer
++ * that cannot be reached reports no page; then the first installed printer
++ * that does (e.g. a PDF printer) is used, and the preview's printer dialog
++ * still lets the user choose another one.
++ */
++bool LogPrinter::setupPrinter(QPrinter &printer)
++{
++    QStringList names{ printer.printerName() };
++    for (const QPrinterInfo &info : QPrinterInfo::availablePrinters())
++        if (!names.contains(info.printerName()))
++            names.append(info.printerName());
++    for (const QString &name : names)
++    {
++        if (name != printer.printerName())
++            printer.setPrinterName(name);
++        if (!printer.pageLayout().isValid() || printer.pageLayout().fullRect(QPageLayout::Millimeter).width() < 50)
++            printer.setPageSize(QPageSize(QLocale().measurementSystem() == QLocale::ImperialUSSystem
++                                              ? QPageSize::Letter : QPageSize::A4));
++        printer.setPageMargins(QMarginsF(10, 10, 10, 10), QPageLayout::Millimeter);
++        printer.setPageOrientation(QPageLayout::Landscape);
++        if (printer.isValid() && printer.width() > 0 && printer.height() > 0)
++            return true;
++    }
++    return false;
++}
++
++void LogPrinter::printView(QWidget *parent, QTableView *view, const QString &title)
++{
++    if (!view || !view->model())
++        return;
++    int total = view->model()->rowCount();
++    int selected = 0;
++    if (view->selectionModel())
++    {
++        QSet<int> seen;
++        for (const QModelIndex &i : view->selectionModel()->selectedIndexes())
++            seen.insert(i.row());
++        selected = seen.size();
++    }
++
++    bool selectedOnly = false;
++    if (selected > 1)
++    {
++        QMessageBox box(QMessageBox::Question, QObject::tr("Print Log"),
++                        QObject::tr("Print the %1 selected frames or all %2 frames?").arg(selected).arg(total),
++                        QMessageBox::Cancel, parent);
++        QPushButton *sel = box.addButton(QObject::tr("Selected"), QMessageBox::AcceptRole);
++        QPushButton *all = box.addButton(QObject::tr("All"), QMessageBox::AcceptRole);
++        box.setDefaultButton(sel);
++        box.exec();
++        if (box.clickedButton() != sel && box.clickedButton() != all)
++            return;
++        selectedOnly = box.clickedButton() == sel;
++    }
++    int count = selectedOnly ? selected : total;
++    if (count > ASK_ABOVE_ROWS
++        && QMessageBox::question(parent, QObject::tr("Print Log"),
++                                 QObject::tr("%1 frames are about %2 pages. Continue?")
++                                     .arg(count).arg(count / ROWS_PER_PAGE_GUESS + 1),
++                                 QMessageBox::Yes | QMessageBox::Cancel) != QMessageBox::Yes)
++        return;
++
++    QApplication::setOverrideCursor(Qt::WaitCursor);
++    Table table = snapshot(view, selectedOnly, -1);
++    QApplication::restoreOverrideCursor();
++    table.title = selectedOnly ? QObject::tr("%1, %2 selected frames").arg(title).arg(table.rows.size())
++                               : QObject::tr("%1, %2 frames").arg(title).arg(table.rows.size());
++
++    QPrinter printer(QPrinter::HighResolution);
++    if (!setupPrinter(printer))
++    {
++        QMessageBox::warning(parent, QObject::tr("Print Log"), QObject::tr("No usable printer was found."));
++        return;
++    }
++    printer.setDocName(title);
++    QPrintPreviewDialog dlg(&printer, parent);
++    dlg.setWindowTitle(QObject::tr("Print Log"));
++    dlg.resize(1100, 800);
++    QObject::connect(&dlg, &QPrintPreviewDialog::paintRequested, &dlg, [&table](QPrinter *p) { paint(p, table); });
++    dlg.exec();
++}
++
++void LogPrinter::paint(QPrinter *printer, const Table &table)
++{
++    QPainter p(printer);
++    if (!p.isActive())
++        return;
++    QApplication::setOverrideCursor(Qt::WaitCursor);
++    paintPages(p, QRect(0, 0, printer->width(), printer->height()), table, [printer]() { return printer->newPage(); });
++    QApplication::restoreOverrideCursor();
++}
++
++int LogPrinter::paintPages(QPainter &p, const QRect &area, const Table &table, const std::function<bool()> &newPage)
++{
++
++    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
++    font.setPointSizeF(8);
++    QFont bold = font;
++    bold.setBold(true);
++    QFont titleFont = QApplication::font();
++    titleFont.setPointSizeF(10);
++    titleFont.setBold(true);
++
++    p.setFont(font);
++    const QFontMetrics fm = p.fontMetrics();
++    const int lineH = fm.height();
++    const int pad = fm.horizontalAdvance(QLatin1Char(' ')) * 2;
++    const int cellFlags = Qt::AlignLeft | Qt::AlignTop | Qt::TextWrapAnywhere;
++
++    p.setFont(titleFont);
++    const int titleH = p.fontMetrics().height() * 3 / 2;
++    p.setFont(bold);
++    const QFontMetrics fmBold = p.fontMetrics();
++    const int headerH = lineH + lineH / 2;
++    const int footerH = lineH * 2;
++    const int rowsH = area.height() - titleH - headerH - footerH;
++    if (rowsH < lineH * 3)
++        return 0;
++
++    /* column widths from the header and a sample of the rows */
++    const int ncol = table.headers.size();
++    std::vector<int> natural(size_t(ncol), 0);
++    for (int c = 0; c < ncol; c++)
++        natural[size_t(c)] = fmBold.horizontalAdvance(table.headers[c]) + pad;
++    int step = qMax(1, table.rows.size() / WIDTH_SAMPLE_ROWS);
++    for (int r = 0; r < table.rows.size(); r += step)
++        for (int c = 0; c < ncol && c < table.rows[r].size(); c++)
++            natural[size_t(c)] = qMax(natural[size_t(c)], textWidth(fm, table.rows[r][c]) + pad);
++    std::vector<int> widths = logprint::fitColumns(natural, area.width(), fm.horizontalAdvance("00000") + pad);
++
++    /* row heights (wrapped cells) and pages */
++    std::vector<int> heights(size_t(table.rows.size()), lineH);
++    for (int r = 0; r < table.rows.size(); r++)
++        for (int c = 0; c < ncol && c < table.rows[r].size(); c++)
++        {
++            const QString &s = table.rows[r][c];
++            int w = widths[size_t(c)] - pad;
++            if (s.contains('\n') || fm.horizontalAdvance(s) > w)
++                heights[size_t(r)] = qMax(heights[size_t(r)], fm.boundingRect(QRect(0, 0, w, 1 << 20), cellFlags, s).height());
++        }
++    std::vector<int> starts = logprint::paginate(heights, rowsH);
++    const int pages = int(starts.size());
++    const QString printed = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm");
++
++    for (int pg = 0; pg < pages; pg++)
++    {
++        if (pg && !newPage())
++            return pg;
++        int y = 0;
++        /* set the pen explicitly: the print preview records only state that
++         * changed, and replays unrecorded state with its own (theme coloured,
++         * white in a dark theme) pen */
++        p.setPen(Qt::NoPen);
++        p.setPen(QPen(Qt::black, qMax(1, lineH / 16)));
++        p.setBrush(Qt::NoBrush);
++        p.setFont(titleFont);
++        p.drawText(QRect(0, 0, area.width(), titleH), Qt::AlignLeft | Qt::AlignTop, table.title);
++        p.setFont(font);
++        p.drawText(QRect(0, 0, area.width(), titleH), Qt::AlignRight | Qt::AlignTop, printed);
++        y += titleH;
++
++        p.setFont(bold);
++        int x = 0;
++        for (int c = 0; c < ncol; c++)
++        {
++            p.drawText(QRect(x, y, widths[size_t(c)] - pad / 2, headerH), Qt::AlignLeft | Qt::AlignVCenter, table.headers[c]);
++            x += widths[size_t(c)];
++        }
++        y += headerH;
++        p.drawLine(0, y - 1, area.width(), y - 1);
++
++        p.setFont(font);
++        int end = pg + 1 < pages ? starts[size_t(pg + 1)] : table.rows.size();
++        for (int r = starts[size_t(pg)]; r < end; r++)
++        {
++            int h = qMin(heights[size_t(r)], rowsH);
++            if (r % 2)
++                p.fillRect(QRect(0, y, area.width(), h), QColor(238, 238, 238));
++            x = 0;
++            for (int c = 0; c < ncol && c < table.rows[r].size(); c++)
++            {
++                QRect cell(x, y, widths[size_t(c)] - pad / 2, h);
++                p.save();
++                p.setClipRect(cell);
++                p.drawText(cell, cellFlags, table.rows[r][c]);
++                p.restore();
++                x += widths[size_t(c)];
++            }
++            y += h;
++        }
++
++        int fy = area.height() - footerH + lineH / 2;
++        p.drawLine(0, fy - lineH / 4, area.width(), fy - lineH / 4);
++        p.drawText(QRect(0, fy, area.width(), lineH), Qt::AlignLeft, QObject::tr("SavvyCAN"));
++        p.drawText(QRect(0, fy, area.width(), lineH), Qt::AlignRight,
++                   QObject::tr("Page %1 of %2").arg(pg + 1).arg(pages));
++    }
++    return pages;
++}
+diff --git a/logprinter.h b/logprinter.h
+new file mode 100755
+index 0000000..ecb593b
+--- /dev/null
++++ b/logprinter.h
+@@ -0,0 +1,47 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef LOGPRINTER_H
++#define LOGPRINTER_H
++
++/*
++ * File > Print Log: prints the frame list as it is shown (visible columns
++ * in their on-screen order, current filter) or only the selected rows,
++ * through a print preview, so it also goes to PDF with any PDF printer.
++ */
++
++#include <QString>
++#include <QStringList>
++#include <QVector>
++#include <functional>
++
++class QPainter;
++class QPrinter;
++class QRect;
++class QTableView;
++class QWidget;
++
++class LogPrinter
++{
++public:
++    /* Snapshot of the table taken when the dialog opens. */
++    struct Table {
++        QString title;
++        QStringList headers;
++        QVector<QStringList> rows;
++    };
++
++    static void printView(QWidget *parent, QTableView *view, const QString &title);
++
++    /* Paints all pages; public so it can be used without the dialog. */
++    static void paint(QPrinter *printer, const Table &table);
++
++    /* Paints the pages into `area` of any painter; newPage() starts the
++     * next page and returns false to stop. Returns the page count. */
++    static int paintPages(QPainter &p, const QRect &area, const Table &table, const std::function<bool()> &newPage);
++
++private:
++    static bool setupPrinter(QPrinter &printer);
++    static Table snapshot(QTableView *view, bool selectedOnly, int maxRows);
++};
++
++#endif // LOGPRINTER_H
+diff --git a/logprintlayout.h b/logprintlayout.h
+new file mode 100755
+index 0000000..6382e11
+--- /dev/null
++++ b/logprintlayout.h
+@@ -0,0 +1,84 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef LOGPRINTLAYOUT_H
++#define LOGPRINTLAYOUT_H
++
++/*
++ * Page layout for printing the frame list (logprinter.cpp), Qt free so it
++ * can be unit tested on the host (tests/gui/logprint_test.cpp).
++ */
++
++#include <algorithm>
++#include <numeric>
++#include <vector>
++
++namespace logprint {
++
++/*
++ * Column widths that fit `available`. Columns keep their natural width
++ * when everything fits; otherwise the widest columns are capped at a
++ * common width (narrow ones such as bus or length stay intact) and their
++ * text wraps. No column goes below `minWidth` unless even that cannot fit,
++ * in which case all columns get an equal share.
++ */
++inline std::vector<int> fitColumns(const std::vector<int> &natural, int available, int minWidth)
++{
++    std::vector<int> w = natural;
++    if (w.empty())
++        return w;
++    long sum = std::accumulate(w.begin(), w.end(), 0L);
++    if (sum <= available)
++        return w;
++    int n = int(w.size());
++    if (long(minWidth) * n >= available)
++    {
++        std::fill(w.begin(), w.end(), std::max(1, available / n));
++        return w;
++    }
++    /* largest cap c with sum(min(w_i, c)) <= available */
++    std::vector<int> sorted = natural;
++    std::sort(sorted.begin(), sorted.end());
++    long below = 0;                       /* sum of the columns narrower than the cap */
++    int cap = minWidth;
++    for (int i = 0; i < n; i++)
++    {
++        long rest = n - i;               /* columns that would be capped */
++        long c = (available - below) / rest;
++        if (c < sorted[size_t(i)])
++        {
++            cap = int(std::max<long>(c, minWidth));
++            break;
++        }
++        below += sorted[size_t(i)];
++        cap = sorted[size_t(i)];
++    }
++    for (int &x : w)
++        x = std::max(std::min(x, cap), std::min(x, minWidth));
++    return w;
++}
++
++/*
++ * First row of every page. A row taller than a page gets a page of its own
++ * (and is clipped when painted).
++ */
++inline std::vector<int> paginate(const std::vector<int> &rowHeights, int pageHeight)
++{
++    std::vector<int> starts;
++    int used = 0;
++    for (int i = 0; i < int(rowHeights.size()); i++)
++    {
++        if (starts.empty() || (used > 0 && used + rowHeights[size_t(i)] > pageHeight))
++        {
++            starts.push_back(i);
++            used = 0;
++        }
++        used += rowHeights[size_t(i)];
++    }
++    if (starts.empty())
++        starts.push_back(0);              /* an empty log still prints its header */
++    return starts;
++}
++
++} // namespace logprint
++
++#endif // LOGPRINTLAYOUT_H
 diff --git a/mainwindow.cpp b/mainwindow.cpp
-index 56ba04c..be75ab2 100644
+index 56ba04c..a5e6308 100644
 --- a/mainwindow.cpp
 +++ b/mainwindow.cpp
-@@ -6,6 +6,13 @@
+@@ -6,6 +6,14 @@
  #include <QtSerialPort/QSerialPortInfo>
  #include "connections/canconmanager.h"
  #include "connections/connectionwindow.h"
@@ -1547,10 +1986,11 @@ index 56ba04c..be75ab2 100644
 +#include "re/responsemeterwindow.h"
 +#include "re/datapanelwindow.h"
 +#include "pp2canlog.h"
++#include "logprinter.h"
  #include "helpwindow.h"
  #include "utility.h"
  #include "filterutility.h"
-@@ -225,6 +232,45 @@ MainWindow::MainWindow(QWidget *parent) :
+@@ -225,8 +233,60 @@ MainWindow::MainWindow(QWidget *parent) :
      //connect(CANConManager::getInstance(), CANConManager::connectionStatusUpdated, this, MainWindow::connectionStatusUpdated);
      connect(CANConManager::getInstance(), SIGNAL(connectionStatusUpdated(int)), this, SLOT(connectionStatusUpdated(int)));
  
@@ -1595,7 +2035,22 @@ index 56ba04c..be75ab2 100644
 +
      //Automatically create the connection window so it can be updated even if we never opened it.
      connectionWindow = new ConnectionWindow();
++    {
++        QAction *printLog = new QAction(tr("Print Log..."), this);
++        connect(printLog, &QAction::triggered, this, [this]() {
++            LogPrinter::printView(this, ui->canFramesView, tr("SavvyCAN frame log"));
++        });
++        QList<QAction *> fileActions = ui->menuFile->actions();
++        int pref = fileActions.indexOf(ui->actionPreferences);
++        QAction *before = pref > 0 && fileActions[pref - 1]->isSeparator() ? fileActions[pref - 1] : ui->actionPreferences;
++        for (QAction *a : fileActions)
++            if (a->text() == tr("Save Log as PP2CAN..."))
++                ui->menuFile->insertAction(before, a);
++        ui->menuFile->insertAction(before, printLog);
++    }
      connect(this, SIGNAL(suspendCapturing(bool)), connectionWindow, SLOT(setSuspendAll(bool)));
+ 
+     //these either are unfinished/not working or are not for general use. But,they exist
 diff --git a/pp2canlog.cpp b/pp2canlog.cpp
 new file mode 100755
 index 0000000..9b8780a
@@ -3123,10 +3578,10 @@ index 0000000..4bd83ed
 +#endif // CANOPEN_EDS_H
 diff --git a/re/canopenwindow.cpp b/re/canopenwindow.cpp
 new file mode 100755
-index 0000000..9e91e25
+index 0000000..25f7e87
 --- /dev/null
 +++ b/re/canopenwindow.cpp
-@@ -0,0 +1,973 @@
+@@ -0,0 +1,1000 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#include "canopenwindow.h"
@@ -3290,7 +3745,16 @@ index 0000000..9e91e25
 +    pdoNode = new QSpinBox(this);
 +    pdoNode->setRange(1, 127);
 +    pdoNode->setToolTip(tr("Node whose PDOs are decoded ($NODEID in the EDS)"));
-+    connect(pdoNode, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() { rebuildPdosFromEds(); });
++    connect(pdoNode, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() {
++        QSettings().setValue("CANopen/pdoNode", pdoNode->value());
++        if (pdosFromNode)                  /* that mapping belongs to the previous node */
++        {
++            pdosFromNode = false;
++            if (!edsLoaded)
++                setPdos({}, tr("- node changed, read the mapping again"));
++        }
++        rebuildPdosFromEds();
++    });
 +    QPushButton *edsBtn = new QPushButton(tr("Load EDS/DCF..."), this);
 +    QPushButton *mapBtn = new QPushButton(tr("Read mapping from node"), this);
 +    mapBtn->setToolTip(tr("Reads the PDO communication and mapping objects (1400..., 1600..., 1800..., 1A00...) over SDO"));
@@ -3337,6 +3801,7 @@ index 0000000..9e91e25
 +    pdoTimer.start(200);
 +    clock.start();
 +
++    pdoNode->setValue(QSettings().value("CANopen/pdoNode", 1).toInt());
 +    QString lastEds = QSettings().value("CANopen/edsFile").toString();
 +    if (!lastEds.isEmpty() && QFileInfo::exists(lastEds))
 +        loadEds(lastEds);
@@ -3890,6 +4355,21 @@ index 0000000..9e91e25
 +{
 +    if (!edsLoaded || mappingRead)
 +        return;
++    if (pdosFromNode)
++    {
++        /* keep the mapping read from the node, take names and data types from the EDS */
++        std::vector<canopen::Pdo> list = pdos;
++        for (canopen::Pdo &p : list)
++        {
++            std::vector<uint32_t> mapping;
++            for (const canopen::PdoEntry &e : p.entries)
++                mapping.push_back(uint32_t(e.index) << 16 | uint32_t(e.sub) << 8 | e.bits);
++            p.entries = canopen::mapEntries(mapping, &eds);
++        }
++        setPdos(list, nodeSource + tr(", names from %1").arg(edsName));
++        return;
++    }
++    pdosFromNode = false;
 +    setPdos(canopen::buildPdos(eds, pdoNode->value()), tr("from %1").arg(edsName));
 +}
 +
@@ -4011,7 +4491,9 @@ index 0000000..9e91e25
 +    if (mappingTimeout)
 +        source += tr(" (incomplete, node stopped answering)");
 +    log(source);
-+    setPdos(list, source);
++    pdosFromNode = true;
++    nodeSource = source;
++    setPdos(list, edsLoaded ? source + tr(", names from %1").arg(edsName) : source);
 +}
 +
 +void CANopenWindow::setPdos(const std::vector<canopen::Pdo> &list, const QString &source)
@@ -4102,10 +4584,10 @@ index 0000000..9e91e25
 +}
 diff --git a/re/canopenwindow.h b/re/canopenwindow.h
 new file mode 100755
-index 0000000..dc66717
+index 0000000..3fc3f2b
 --- /dev/null
 +++ b/re/canopenwindow.h
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,164 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#ifndef CANOPENWINDOW_H
@@ -4255,6 +4737,8 @@ index 0000000..dc66717
 +    QHash<quint32, int> pdoByCob;     /* COB-ID -> index in pdos */
 +    QMap<int, PendingPdo> pending;    /* key: (tx ? 0 : 256) + number */
 +    bool            mappingRead = false;
++    bool            pdosFromNode = false;  /* current mapping was read over SDO */
++    QString         nodeSource;            /* "read from node 5: ..." */
 +    bool            mappingTimeout = false;
 +    QTimer          pdoTimer;
 +

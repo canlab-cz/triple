@@ -16,12 +16,16 @@ pp2canlog_test: pp2canlog_test.cpp $(GUI)/pp2canlogfmt.h
 canopen_eds_test: canopen_eds_test.cpp $(RE)/canopen_eds.h
 	$(CXX) $(CXXFLAGS) -I $(RE) -o $@ canopen_eds_test.cpp
 
-test: canidcalc_test pp2canlog_test canopen_eds_test
+logprint_test: logprint_test.cpp $(GUI)/logprintlayout.h
+	$(CXX) $(CXXFLAGS) -I $(GUI) -o $@ logprint_test.cpp
+
+test: canidcalc_test pp2canlog_test canopen_eds_test logprint_test
 	./canidcalc_test
 	./pp2canlog_test
 	./canopen_eds_test ../../tools/canopen_sim.eds
+	./logprint_test
 
 clean:
-	rm -f canidcalc_test pp2canlog_test canopen_eds_test
+	rm -f canidcalc_test pp2canlog_test canopen_eds_test logprint_test
 
 .PHONY: test clean
