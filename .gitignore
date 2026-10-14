@@ -19,3 +19,6 @@ utility/tripled_32
 utility/tripled_64
 __pycache__/
 *.pyc
+# reverse engineering command line tool
+tools/canre/canre_cli
+tools/canre/canre_cli.exe

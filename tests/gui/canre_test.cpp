@@ -190,6 +190,100 @@ int main()
     CHECK(f && !f->bigEndian && f->length == 14 && f->maxRaw == 1999 * 5);
     CHECK(!findField(rp, FieldKind::Counter, 0));
 
+    /* byte order from carries: a Motorola value with a noisy low byte (byte 1)
+     * next to an unrelated slow byte (byte 2). Low byte + byte 2 in Intel
+     * order look as good by flip rates alone; only byte 0 carries with it. */
+    {
+        Capture c2;
+        for (int i = 0; i < 3000; i++)
+        {
+            double x = i / 3000.0;
+            int v = int(3200 + 9000 * x + (rand() % 121) - 60);
+            uint8_t d[4] = { uint8_t(v >> 8), uint8_t(v), uint8_t(80 * std::sin(x * 6) + 100), 0 };
+            c2.add(uint64_t(i) * 10000, 0, 0x530, false, 4, d);
+        }
+        FrameKey k530; k530.id = 0x530;
+        IdAnalysis mo = analyzeId(c2, k530);
+        std::printf("%s", describe(mo).c_str());
+        bool found = false;
+        for (const Field &fl : mo.fields)
+            if (fl.kind == FieldKind::Signal && fl.bigEndian && fl.startBit / 8 == 0 && fl.length == fl.startBit + 1 + 8)  /* to the end of byte 1 */
+                found = fl.minRaw >= 3100 && fl.maxRaw <= 12300;
+        CHECK(found);
+        CHECK(findField(mo, FieldKind::Signal, 16) && findField(mo, FieldKind::Signal, 16)->length == 8);
+    }
+
+    /* multiplexer whose pages put different values into one byte (byte 4:
+     * the high byte of a noisy current on page 0, a temperature on page 1,
+     * constants on pages 2 and 3). Frames with the same byte 4 look even
+     * more alike than frames of the same page, but byte 4 only refines the
+     * pages: the selector is byte 0. */
+    {
+        Capture c3;
+        for (int i = 0; i < 2400; i++)
+        {
+            int page = i % 4;
+            uint8_t d[8] = { uint8_t(page), 0, 0, 0, 0, 0, 0, 0 };
+            if (page == 0)
+            {
+                int cur = -50 - (i / 4) % 1500 + rand() % 21 - 10;   /* 0.1 A, negative */
+                int volt = 3960 + rand() % 5 - 2;
+                d[1] = uint8_t(volt); d[2] = uint8_t(volt >> 8);
+                d[3] = uint8_t(cur); d[4] = uint8_t(cur >> 8);
+            }
+            else if (page == 1)
+                for (int k = 0; k < 4; k++) d[1 + k] = uint8_t(65 + k + i / 800);
+            else if (page == 2)
+                d[1] = uint8_t(160 - i / 300);
+            else
+            {
+                d[1] = 0x12; d[2] = 0x34; d[3] = 0x56; d[4] = 0x78;
+            }
+            c3.add(uint64_t(i) * 25000, 0, 0x540, false, 8, d);
+        }
+        FrameKey k540; k540.id = 0x540;
+        IdAnalysis bm = analyzeId(c3, k540);
+        std::printf("%s", describe(bm).c_str());
+        CHECK(bm.muxStart == 0 && bm.muxValues.size() == 4);
+    }
+
+    /* a signed 16-bit value around zero is reported signed, with its range */
+    {
+        Capture c5;
+        for (int i = 0; i < 1000; i++)
+        {
+            int v = int(-1000 * std::sin(i / 100.0) + 300);              /* -700 .. 1300 */
+            uint8_t d[3] = { uint8_t(v), uint8_t(v >> 8), 0x11 };
+            c5.add(uint64_t(i) * 10000, 0, 0x560, false, 3, d);
+        }
+        FrameKey k560; k560.id = 0x560;
+        IdAnalysis sg = analyzeId(c5, k560);
+        std::printf("%s", describe(sg).c_str());
+        bool okSigned = false;
+        for (const Field &fl : sg.fields)
+            if (fl.kind == FieldKind::Signal && fl.isSigned && int64_t(fl.minRaw) >= -700 && int64_t(fl.minRaw) <= -690 &&
+                int64_t(fl.maxRaw) >= 1290 && int64_t(fl.maxRaw) <= 1300)
+                okSigned = true;
+        CHECK(okSigned && has(describe(sg), "signed"));
+        CHECK(signExtend(0xFFFF, 16) == -1 && signExtend(0x7FFF, 16) == 32767 && signExtend(0x8, 4) == -8);
+    }
+
+    /* window comparison: a lamp that starts blinking (toggles every 5th
+     * frame) ranks above the bits of a value that drifts in both windows */
+    {
+        Capture c4;
+        for (int i = 0; i < 800; i++)
+        {
+            int temp = 60 + i / 12;                                  /* drifts slowly */
+            uint8_t lamp = (i >= 400 && (i / 5) % 2) ? 0x20 : 0;
+            uint8_t d[2] = { lamp, uint8_t(temp) };
+            c4.add(uint64_t(i) * 10000, 0, 0x550, false, 2, d);
+        }
+        WindowDiff wb = diffWindows(c4, 0, 3.99, 4.0, 7.99);
+        std::printf("%s", describe(wb).c_str());
+        CHECK(!wb.bits.empty() && wb.bits[0].byte == 0 && wb.bits[0].bit == 5 && wb.bits[0].score < 1.0);
+    }
+
     /* DBC export */
     DbcMessage m;
     m.key = k100; m.name = "Engine 1"; m.length = 8;

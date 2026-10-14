@@ -153,6 +153,12 @@ int main(int argc, char **argv)
     Args sg; sg.str["id"] = "123"; sg.num["start_bit"] = 0; sg.num["length"] = 8; sg.str["byte_order"] = "intel"; sg.flag["signed"] = true;
     r = run("signal_values", sg, cap, lim);
     CHECK(has(r.text, "min -128 max 127"));
+    sv.num["start_bit"] = 16; sv.num["length"] = 8;                         /* only frames whose byte 1 is 1 */
+    sv.num["mux_start"] = 8; sv.num["mux_length"] = 8; sv.num["mux_value"] = 1;
+    r = run("signal_values", sv, cap, lim);
+    CHECK(!r.error && has(r.text, "500 values"));
+    Args mbad = sv; mbad.num.erase("mux_length");
+    CHECK(run("signal_values", mbad, cap, lim).error);
 
     Args cw; cw.num["a_start"] = 0; cw.num["a_end"] = 4.9; cw.num["b_start"] = 5.1; cw.num["b_end"] = 9.99;
     r = run("compare_windows", cw, cap, lim);

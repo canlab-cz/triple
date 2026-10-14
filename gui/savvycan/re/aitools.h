@@ -139,7 +139,7 @@ inline std::string toolDefinitions(const Limits &l)
 {"name":"list_ids","description":"One line per CAN ID: bus, count, mean period and jitter in ms, lengths, number of bytes that change, distinct payloads. IDs are hex.","input_schema":{"type":"object","properties":{"bus":{"type":"integer","description":"only this bus"},"sort":{"type":"string","enum":["id","count","changing"]},"limit":{"type":"integer","description":"max lines, default 100"}}}},
 {"name":"analyze_id","description":"Statistics of one ID: per byte min/max/distinct/changes/entropy, bit flip rate per bit, and detected fields: rolling counters, checksums (XOR, SUM, CRC-8 J1850/AUTOSAR), constants, flags, a multiplexer (a field whose value selects the layout of the other bytes), and signal candidates segmented by bit flip rates with byte order. Start bits follow DBC: Intel = LSB position, Motorola = MSB position, position = byte*8 + bit. For a multiplexed ID, call again with mux_start/mux_length/mux_value to analyze one page.","input_schema":{"type":"object","properties":{"id":{"type":"string","description":"hex, e.g. \"1A3\" or \"18FEF100\""},"bus":{"type":"integer"},"start_s":{"type":"number"},"end_s":{"type":"number"},"mux_start":{"type":"integer","description":"multiplexer start bit (Intel), from a previous analyze_id"},"mux_length":{"type":"integer"},"mux_value":{"type":"integer","description":"only frames with this multiplexer value"}},"required":["id"]}},
 {"name":"get_frames","description":"Raw frames of one ID: time in s and data bytes in hex. Prefer analyze_id and signal_values; use this to look at a few concrete frames.","input_schema":{"type":"object","properties":{"id":{"type":"string"},"bus":{"type":"integer"},"start_s":{"type":"number"},"end_s":{"type":"number"},"limit":{"type":"integer"}},"required":["id"]}},
-{"name":"signal_values","description":"Decode a bit field of one ID over time: statistics and an evenly downsampled list of (time s, value). Value = raw * factor + offset.","input_schema":{"type":"object","properties":{"id":{"type":"string"},"bus":{"type":"integer"},"start_bit":{"type":"integer"},"length":{"type":"integer"},"byte_order":{"type":"string","enum":["intel","motorola"]},"signed":{"type":"boolean"},"factor":{"type":"number"},"offset":{"type":"number"},"start_s":{"type":"number"},"end_s":{"type":"number"},"max_points":{"type":"integer"}},"required":["id","start_bit","length","byte_order"]}},
+{"name":"signal_values","description":"Decode a bit field of one ID over time: statistics and an evenly downsampled list of (time s, value). Value = raw * factor + offset. For a signal on one page of a multiplexed ID give mux_start/mux_length/mux_value, otherwise the other pages are decoded too.","input_schema":{"type":"object","properties":{"id":{"type":"string"},"bus":{"type":"integer"},"start_bit":{"type":"integer"},"length":{"type":"integer"},"byte_order":{"type":"string","enum":["intel","motorola"]},"signed":{"type":"boolean"},"factor":{"type":"number"},"offset":{"type":"number"},"start_s":{"type":"number"},"end_s":{"type":"number"},"max_points":{"type":"integer"},"mux_start":{"type":"integer","description":"multiplexed ID: only frames whose multiplexer (Intel bit field at mux_start, mux_length bits) has mux_value"},"mux_length":{"type":"integer"},"mux_value":{"type":"integer"}},"required":["id","start_bit","length","byte_order"]}},
 {"name":"compare_windows","description":"What differs between time window A and B: IDs present in only one, changed frame rates, and the bits whose level or toggling differs most (a switch or state shows as a steady bit at a different level).","input_schema":{"type":"object","properties":{"a_start":{"type":"number"},"a_end":{"type":"number"},"b_start":{"type":"number"},"b_end":{"type":"number"},"max_bits":{"type":"integer"}},"required":["a_start","a_end","b_start","b_end"]}},
 {"name":"changes_around","description":"compare_windows for the seconds before and after a moment, e.g. when the user pressed a button.","input_schema":{"type":"object","properties":{"time_s":{"type":"number"},"before_s":{"type":"number"},"after_s":{"type":"number"}},"required":["time_s"]}},
 {"name":"propose_dbc","description":"Offer decoded messages and signals to the user as a DBC proposal. Nothing is applied automatically; the user reviews and saves it. Use DBC start bit conventions as in analyze_id.","input_schema":{"type":"object","properties":{"messages":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"length":{"type":"integer"},"signals":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"start_bit":{"type":"integer"},"length":{"type":"integer"},"byte_order":{"type":"string","enum":["intel","motorola"]},"signed":{"type":"boolean"},"factor":{"type":"number"},"offset":{"type":"number"},"min":{"type":"number"},"max":{"type":"number"},"unit":{"type":"string"},"comment":{"type":"string"},"multiplexer":{"type":"boolean","description":"this signal is the message's multiplexer"},"mux_value":{"type":"integer","description":"signal exists only when the multiplexer has this value"}},"required":["name","start_bit","length","byte_order"]}}},"required":["id","name","signals"]}}},"required":["messages"]}})";
@@ -159,7 +159,8 @@ inline std::string systemPrompt()
            "bit positions follow DBC (position = byte*8 + bit, Intel start = LSB, Motorola start = MSB). Start broad "
            "(capture_overview, list_ids), then analyze_id on interesting IDs, signal_values to check a hypothesis, "
            "compare_windows / changes_around when the user tells you when they did something. When an ID has a "
-           "multiplexer, analyze each of its values separately and propose its signals with mux_value. Tool results are "
+           "multiplexer, analyze each of its values separately, decode its signals with the same mux parameters in "
+           "signal_values, and propose them with mux_value. Tool results are "
            "limited in size; ask for narrower ranges rather than everything. Say how sure you are; a hypothesis is "
            "not a fact until a signal behaves as expected. Offer findings with propose_dbc when they are solid. "
            "Transmitting frames can affect real equipment: only propose it when needed and explain why.";
@@ -291,11 +292,18 @@ inline Result run(const std::string &name, const Args &a, const canre::Capture &
         bool motorola = a.s("byte_order", "intel") == "motorola", sgn = a.b("signed", false);
         double factor = a.n("factor", 1), offset = a.n("offset", 0);
         if (len < 1 || len > 64) return { "length must be 1..64", true };
+        int muxStart = int(a.n("mux_start", -1)), muxLen = int(a.n("mux_length", 0));
+        int64_t muxValue = int64_t(a.n("mux_value", -1));
+        bool muxed = a.has("mux_value");
+        if (muxed && (muxStart < 0 || muxLen < 1 || muxLen > 32))
+            return { "mux_value needs mux_start and mux_length (1..32) from analyze_id", true };
         std::vector<size_t> idx = cap.indices(k, t0, t1);
         std::vector<std::pair<double, double>> pts;
         for (size_t i : idx)
         {
             bool ok;
+            if (muxed && (int64_t(canre::extractBits(cap.data(i), cap.frame(i).len, muxStart, muxLen, false, &ok)) != muxValue || !ok))
+                continue;
             uint64_t raw = canre::extractBits(cap.data(i), cap.frame(i).len, start, len, motorola, &ok);
             if (!ok) continue;
             double v;

@@ -55,6 +55,8 @@ SignalFinderWindow::SignalFinderWindow(const QVector<GuiFrame> *frameList, QWidg
     pageCombo = new QComboBox(this);
     pageCombo->setToolTip(tr("For a multiplexed ID: analyze only the frames with one multiplexer value"));
     pageCombo->addItem(tr("all frames"));
+    pageCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    pageCombo->setMinimumContentsLength(16);
     pageCombo->setEnabled(false);
     QHBoxLayout *top = new QHBoxLayout;
     top->addWidget(new QLabel(tr("Time range (s, empty = all):"), this));
@@ -307,7 +309,8 @@ void SignalFinderWindow::showAnalysis()
         fieldTable->setItem(r, 3, ro(QString::number(f.startBit)));
         fieldTable->setItem(r, 4, ro(QString::number(f.length)));
         fieldTable->setItem(r, 5, ro(f.length == 1 || (f.startBit / 8 == (f.startBit + f.length - 1) / 8 && !f.bigEndian) ? "-" : f.bigEndian ? "Motorola" : "Intel"));
-        fieldTable->setItem(r, 6, ro(QString("%1 .. %2").arg(qulonglong(f.minRaw)).arg(qulonglong(f.maxRaw))));
+        fieldTable->setItem(r, 6, ro(f.isSigned ? QString("%1 .. %2").arg(qlonglong(f.minRaw)).arg(qlonglong(f.maxRaw))
+                                                : QString("%1 .. %2").arg(qulonglong(f.minRaw)).arg(qulonglong(f.maxRaw))));
         fieldTable->setItem(r, 7, ro(QString::number(f.unique)));
         fieldTable->setItem(r, 8, ro(QString::fromStdString(f.note)));
     }
@@ -329,10 +332,14 @@ void SignalFinderWindow::fieldSelected()
     for (size_t i : cap.indices(current.key, t0, t1))
     {
         bool ok;
+        /* one page of a multiplexed ID: only its frames */
+        if (current.muxFilter >= 0 &&
+            (int64_t(canre::extractBits(cap.data(i), cap.frame(i).len, current.muxStart, current.muxLength, false, &ok)) != current.muxFilter || !ok))
+            continue;
         uint64_t v = canre::extractBits(cap.data(i), cap.frame(i).len, f.startBit, f.length, f.bigEndian, &ok);
         if (!ok) continue;
         x.append(cap.seconds(i));
-        y.append(double(v));
+        y.append(f.isSigned ? double(canre::signExtend(v, f.length)) : double(v));
     }
     plot->graph(0)->setData(x, y);
     plot->graph(0)->setLineStyle(f.length == 1 ? QCPGraph::lsStepLeft : QCPGraph::lsLine);
@@ -367,8 +374,9 @@ void SignalFinderWindow::addToDbc()
         s.startBit = f.startBit;
         s.length = f.length;
         s.bigEndian = f.bigEndian;
-        s.minV = double(f.minRaw);
-        s.maxV = double(f.maxRaw);
+        s.isSigned = f.isSigned;
+        s.minV = f.isSigned ? double(int64_t(f.minRaw)) : double(f.minRaw);
+        s.maxV = f.isSigned ? double(int64_t(f.maxRaw)) : double(f.maxRaw);
         s.comment = std::string(canre::kindName(f.kind)) + (f.note.empty() ? "" : ": " + f.note);
         if (f.kind == canre::FieldKind::Multiplexer) s.muxRole = 1;
         else if (current.muxFilter >= 0)
