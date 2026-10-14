@@ -17,7 +17,12 @@ What the connection provides:
 * adapter error counters and error state in the device console, and an
   error frame in the frame list on every bus state change (warning,
   passive, bus off, back to active) with TEC/REC in bytes 6 and 7;
-* the adapter's 100-byte message limit enforced on transmit.
+* the adapter's 100-byte message limit enforced on transmit;
+* a Bus Statistics window (RE Tools menu): load % per bus with a graph,
+  frames/s, error frames, bus state with TEC/REC. It works with every
+  SavvyCAN connection, not only the Triple.
+
+![Bus Statistics window](../../doc/img/savvycan-bus-statistics.png)
 
 ## Apply to an upstream checkout
 

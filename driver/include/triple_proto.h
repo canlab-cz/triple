@@ -34,6 +34,7 @@
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
+typedef uint64_t u64;
 #endif
 
 #ifdef __cplusplus
@@ -194,6 +195,22 @@ u32 triple_fd_speed_code(u32 nominal, u32 data);
 /* Default data bitrate to use with a nominal bitrate when the user did not
  * ask for CAN FD (the port always runs in FD mode in the firmware). */
 u32 triple_fd_default_data_bitrate(u32 nominal);
+
+/* ---- timestamps ------------------------------------------------------ */
+
+/* Extends the adapter's 32-bit microsecond counter (wraps every 71.6 min)
+ * to 64 bits. Frames from different ports can arrive slightly out of
+ * timestamp order, so a frame up to TRIPLE_TS_REORDER_US older than the
+ * newest one seen is taken as reordered, not as a counter wrap. */
+#define TRIPLE_TS_REORDER_US 1000000u
+
+struct triple_ts {
+  u64  base;      /* added to the 32-bit counter */
+  u32  last;      /* newest counter value seen */
+  bool valid;
+};
+
+u64 triple_ts_extend(struct triple_ts *t, u32 ts);
 
 /* DLC code <-> length */
 u8 triple_dlc2len(u8 dlc);

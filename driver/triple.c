@@ -100,8 +100,7 @@ struct triple_adapter {
   int xleft;
   int tx_port;                      /* port owning the frame in flight, -1 none */
 
-  u64 ts_base;                      /* 32 bit microsecond counter extension */
-  u32 ts_last;
+  struct triple_ts ts;              /* 32 bit microsecond counter extension */
 
   char fw_version[16];
 };
@@ -354,14 +353,6 @@ drop:
  * receive side
  */
 
-static u64 triple_ts_extend(struct triple_adapter *a, u32 ts)
-{
-  if (ts < a->ts_last)
-    a->ts_base += 1ULL << 32;
-  a->ts_last = ts;
-  return a->ts_base + ts;
-}
-
 static void triple_rx_frame(struct triple_adapter *a, const struct triple_frame *f)
 {
   struct net_device *dev = a->devs[f->port];
@@ -406,7 +397,7 @@ static void triple_rx_frame(struct triple_adapter *a, const struct triple_frame 
   }
 
   if (f->has_ts)
-    skb_hwtstamps(skb)->hwtstamp = ns_to_ktime(triple_ts_extend(a, f->ts) * NSEC_PER_USEC);
+    skb_hwtstamps(skb)->hwtstamp = ns_to_ktime(triple_ts_extend(&a->ts, f->ts) * NSEC_PER_USEC);
 
   dev->stats.rx_packets++;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)

@@ -31,8 +31,7 @@ TripleSerial::TripleSerial(QString portName) :
     rxEscaped = false;
     rxResync = false;
     tsBaseMicros = 0;
-    tsLast = 0;
-    tsWrapAdd = 0;
+    memset(&tsExt, 0, sizeof(tsExt));
     tsHaveBase = false;
     for (int i = 0; i < TRIPLE_PORTS; i++)
     {
@@ -147,8 +146,7 @@ void TripleSerial::connectDevice()
     rxEscaped = false;
     rxResync = false;
     tsHaveBase = false;
-    tsWrapAdd = 0;
-    tsLast = 0;
+    memset(&tsExt, 0, sizeof(tsExt));
     fwVersion.clear();
 
     uint8_t cmd[64];
@@ -420,10 +418,7 @@ qint64 TripleSerial::adapterTimeToMicros(uint32_t ts)
 {
     qint64 managerBasis = (qint64)CANConManager::getInstance()->getTimeBasis();
 
-    if (tsHaveBase && ts < tsLast)
-        tsWrapAdd += 1ull << 32;
-    tsLast = ts;
-    quint64 unwrapped = tsWrapAdd + ts;
+    quint64 unwrapped = triple_ts_extend(&tsExt, ts);
 
     if (!tsHaveBase || managerBasis != tsManagerBasis)
     {

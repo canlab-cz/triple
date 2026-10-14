@@ -228,6 +228,28 @@ int triple_decode(const u8 *wire, size_t n, struct triple_msg *m)
   return m->type;
 }
 
+/* ---- timestamps ------------------------------------------------------- */
+
+u64 triple_ts_extend(struct triple_ts *t, u32 ts)
+{
+  const u64 wrap = (u64)1 << 32;
+  u32 back = t->last - ts;          /* modulo 2^32 */
+
+  if (t->valid && back != 0 && back <= TRIPLE_TS_REORDER_US)
+  {
+    /* slightly older than the newest frame: reordered between ports. If
+     * the newest frame already crossed a wrap, this one is from before it. */
+    if (ts > t->last && t->base >= wrap)
+      return t->base - wrap + ts;
+    return t->base + ts;
+  }
+  if (t->valid && ts < t->last)
+    t->base += wrap;                /* counter wrapped (or the adapter restarted) */
+  t->last = ts;
+  t->valid = true;
+  return t->base + ts;
+}
+
 /* ---- commands --------------------------------------------------------- */
 
 int triple_encode_settings_can(u8 *out, u8 port, u16 kbit, bool listen_only)

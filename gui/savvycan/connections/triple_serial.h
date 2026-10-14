@@ -77,8 +77,7 @@ private:
     /* adapter 32-bit microsecond clock, extended and tied to system time */
     qint64   tsBaseMicros;      /* manager-relative time (us) corresponding to adapter time 0 */
     qint64   tsManagerBasis;    /* manager basis the offset was computed against */
-    uint32_t tsLast;
-    quint64  tsWrapAdd;
+    triple_ts tsExt;            /* 32-bit counter extension, shared codec */
     bool     tsHaveBase;
 
     uint8_t  lastTec[TRIPLE_PORTS];

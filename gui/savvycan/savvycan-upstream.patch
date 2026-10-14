@@ -1,5 +1,5 @@
 diff --git a/SavvyCAN.pro b/SavvyCAN.pro
-index d7197dc..b4ede39 100644
+index d7197dc..2d8bc6a 100644
 --- a/SavvyCAN.pro
 +++ b/SavvyCAN.pro
 @@ -28,6 +28,8 @@ SOURCES += main.cpp\
@@ -11,7 +11,15 @@ index d7197dc..b4ede39 100644
      connections/mqtt_bus.cpp \
      dbc/dbcnodeduplicateeditor.cpp \
      framesenderobject.cpp \
-@@ -114,6 +116,8 @@ HEADERS  += mainwindow.h \
+@@ -103,6 +105,7 @@ SOURCES += main.cpp\
+     re/sniffer/SnifferDelegate.cpp \
+     connections/newconnectiondialog.cpp \
+     re/temporalgraphwindow.cpp \
++    re/busstatswindow.cpp \
+     re/udsfirmwareuploaderwindow.cpp \
+     filterutility.cpp \
+     pcaplite.cpp
+@@ -114,6 +117,8 @@ HEADERS  += mainwindow.h \
      connections/canlogserver.h \
      connections/canserver.h \
      connections/lawicel_serial.h \
@@ -20,6 +28,14 @@ index d7197dc..b4ede39 100644
      connections/socketcand.h \
      connections/mqtt_bus.h \
      dbc/dbcnodeduplicateeditor.h \
+@@ -198,6 +203,7 @@ HEADERS  += mainwindow.h \
+     re/sniffer/SnifferDelegate.h \
+     connections/newconnectiondialog.h \
+     re/temporalgraphwindow.h \
++    re/busstatswindow.h \
+     re/udsfirmwareuploaderwindow.h \
+     filterutility.h \
+     pcaplite.h
 diff --git a/connections/canconconst.h b/connections/canconconst.h
 index 0f7ba9c..2154d04 100644
 --- a/connections/canconconst.h
@@ -181,10 +197,10 @@ index 387a4fb..1053355 100644
  };
 diff --git a/connections/triple_proto.c b/connections/triple_proto.c
 new file mode 100755
-index 0000000..68612c1
+index 0000000..019d349
 --- /dev/null
 +++ b/connections/triple_proto.c
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,365 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +/*
@@ -415,6 +431,28 @@ index 0000000..68612c1
 +  return m->type;
 +}
 +
++/* ---- timestamps ------------------------------------------------------- */
++
++u64 triple_ts_extend(struct triple_ts *t, u32 ts)
++{
++  const u64 wrap = (u64)1 << 32;
++  u32 back = t->last - ts;          /* modulo 2^32 */
++
++  if (t->valid && back != 0 && back <= TRIPLE_TS_REORDER_US)
++  {
++    /* slightly older than the newest frame: reordered between ports. If
++     * the newest frame already crossed a wrap, this one is from before it. */
++    if (ts > t->last && t->base >= wrap)
++      return t->base - wrap + ts;
++    return t->base + ts;
++  }
++  if (t->valid && ts < t->last)
++    t->base += wrap;                /* counter wrapped (or the adapter restarted) */
++  t->last = ts;
++  t->valid = true;
++  return t->base + ts;
++}
++
 +/* ---- commands --------------------------------------------------------- */
 +
 +int triple_encode_settings_can(u8 *out, u8 port, u16 kbit, bool listen_only)
@@ -530,10 +568,10 @@ index 0000000..68612c1
 +}
 diff --git a/connections/triple_proto.h b/connections/triple_proto.h
 new file mode 100755
-index 0000000..36c6e07
+index 0000000..9e6df3d
 --- /dev/null
 +++ b/connections/triple_proto.h
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,223 @@
 +/* SPDX-License-Identifier: MIT */
 +/* Copyright (c) 2026 CANLAB s.r.o. */
 +/*
@@ -570,6 +608,7 @@ index 0000000..36c6e07
 +typedef uint8_t u8;
 +typedef uint16_t u16;
 +typedef uint32_t u32;
++typedef uint64_t u64;
 +#endif
 +
 +#ifdef __cplusplus
@@ -731,6 +770,22 @@ index 0000000..36c6e07
 + * ask for CAN FD (the port always runs in FD mode in the firmware). */
 +u32 triple_fd_default_data_bitrate(u32 nominal);
 +
++/* ---- timestamps ------------------------------------------------------ */
++
++/* Extends the adapter's 32-bit microsecond counter (wraps every 71.6 min)
++ * to 64 bits. Frames from different ports can arrive slightly out of
++ * timestamp order, so a frame up to TRIPLE_TS_REORDER_US older than the
++ * newest one seen is taken as reordered, not as a counter wrap. */
++#define TRIPLE_TS_REORDER_US 1000000u
++
++struct triple_ts {
++  u64  base;      /* added to the 32-bit counter */
++  u32  last;      /* newest counter value seen */
++  bool valid;
++};
++
++u64 triple_ts_extend(struct triple_ts *t, u32 ts);
++
 +/* DLC code <-> length */
 +u8 triple_dlc2len(u8 dlc);
 +u8 triple_len2dlc(u8 len);
@@ -742,10 +797,10 @@ index 0000000..36c6e07
 +#endif /* TRIPLE_PROTO_H */
 diff --git a/connections/triple_serial.cpp b/connections/triple_serial.cpp
 new file mode 100755
-index 0000000..aa839bd
+index 0000000..cc4a38c
 --- /dev/null
 +++ b/connections/triple_serial.cpp
-@@ -0,0 +1,576 @@
+@@ -0,0 +1,571 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#include <QDebug>
@@ -779,8 +834,7 @@ index 0000000..aa839bd
 +    rxEscaped = false;
 +    rxResync = false;
 +    tsBaseMicros = 0;
-+    tsLast = 0;
-+    tsWrapAdd = 0;
++    memset(&tsExt, 0, sizeof(tsExt));
 +    tsHaveBase = false;
 +    for (int i = 0; i < TRIPLE_PORTS; i++)
 +    {
@@ -895,8 +949,7 @@ index 0000000..aa839bd
 +    rxEscaped = false;
 +    rxResync = false;
 +    tsHaveBase = false;
-+    tsWrapAdd = 0;
-+    tsLast = 0;
++    memset(&tsExt, 0, sizeof(tsExt));
 +    fwVersion.clear();
 +
 +    uint8_t cmd[64];
@@ -1168,10 +1221,7 @@ index 0000000..aa839bd
 +{
 +    qint64 managerBasis = (qint64)CANConManager::getInstance()->getTimeBasis();
 +
-+    if (tsHaveBase && ts < tsLast)
-+        tsWrapAdd += 1ull << 32;
-+    tsLast = ts;
-+    quint64 unwrapped = tsWrapAdd + ts;
++    quint64 unwrapped = triple_ts_extend(&tsExt, ts);
 +
 +    if (!tsHaveBase || managerBasis != tsManagerBasis)
 +    {
@@ -1324,10 +1374,10 @@ index 0000000..aa839bd
 +}
 diff --git a/connections/triple_serial.h b/connections/triple_serial.h
 new file mode 100755
-index 0000000..c5683e2
+index 0000000..a38dc90
 --- /dev/null
 +++ b/connections/triple_serial.h
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,90 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#ifndef TRIPLE_SERIAL_H
@@ -1407,8 +1457,7 @@ index 0000000..c5683e2
 +    /* adapter 32-bit microsecond clock, extended and tied to system time */
 +    qint64   tsBaseMicros;      /* manager-relative time (us) corresponding to adapter time 0 */
 +    qint64   tsManagerBasis;    /* manager basis the offset was computed against */
-+    uint32_t tsLast;
-+    quint64  tsWrapAdd;
++    triple_ts tsExt;            /* 32-bit counter extension, shared codec */
 +    bool     tsHaveBase;
 +
 +    uint8_t  lastTec[TRIPLE_PORTS];
@@ -1419,6 +1468,399 @@ index 0000000..c5683e2
 +};
 +
 +#endif // TRIPLE_SERIAL_H
+diff --git a/mainwindow.cpp b/mainwindow.cpp
+index 56ba04c..ebee53b 100644
+--- a/mainwindow.cpp
++++ b/mainwindow.cpp
+@@ -6,6 +6,8 @@
+ #include <QtSerialPort/QSerialPortInfo>
+ #include "connections/canconmanager.h"
+ #include "connections/connectionwindow.h"
++#include "re/busstatswindow.h"
++#include <QPointer>
+ #include "helpwindow.h"
+ #include "utility.h"
+ #include "filterutility.h"
+@@ -225,6 +227,14 @@ MainWindow::MainWindow(QWidget *parent) :
+     //connect(CANConManager::getInstance(), CANConManager::connectionStatusUpdated, this, MainWindow::connectionStatusUpdated);
+     connect(CANConManager::getInstance(), SIGNAL(connectionStatusUpdated(int)), this, SLOT(connectionStatusUpdated(int)));
+ 
++    connect(ui->menu_RE_Tools->addAction(tr("Bus Statistics")), &QAction::triggered, this, [this]() {
++        static QPointer<BusStatsWindow> busStatsWindow;
++        if (!busStatsWindow) busStatsWindow = new BusStatsWindow(this);
++        busStatsWindow->show();
++        busStatsWindow->raise();
++        busStatsWindow->activateWindow();
++    });
++
+     //Automatically create the connection window so it can be updated even if we never opened it.
+     connectionWindow = new ConnectionWindow();
+     connect(this, SIGNAL(suspendCapturing(bool)), connectionWindow, SLOT(setSuspendAll(bool)));
+diff --git a/re/busstatswindow.cpp b/re/busstatswindow.cpp
+new file mode 100755
+index 0000000..f924341
+--- /dev/null
++++ b/re/busstatswindow.cpp
+@@ -0,0 +1,271 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#include "busstatswindow.h"
++
++#include <QHBoxLayout>
++#include <QHeaderView>
++#include <QLabel>
++#include <QPushButton>
++#include <QTableWidget>
++#include <QVBoxLayout>
++
++#include "qcustomplot.h"
++#include "connections/canbus.h"
++#include "connections/canconmanager.h"
++#include "connections/canconnection.h"
++
++namespace {
++const int HISTORY_SECONDS = 120;
++const char *STATE_NAMES[] = { "error active", "error warning", "error passive", "bus off" };
++const QColor PALETTE[] = { QColor(0x1f, 0x77, 0xb4), QColor(0xff, 0x7f, 0x0e), QColor(0x2c, 0xa0, 0x2c),
++                           QColor(0xd6, 0x27, 0x28), QColor(0x94, 0x67, 0xbd), QColor(0x8c, 0x56, 0x4b) };
++
++enum Col { C_BUS, C_NOMINAL, C_DATA, C_RATE, C_LOAD, C_PEAK, C_FRAMES, C_ERRORS, C_STATE, C_TEC, C_REC, C_COUNT };
++
++inline int frameBus(const BusStatsFrame &f)
++{
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++    return f.getBus();
++#else
++    return f.bus;
++#endif
++}
++
++QString bitrateText(quint32 bps)
++{
++    if (!bps) return "-";
++    if (bps >= 1000000 && bps % 100000 == 0) return QString::number(bps / 1e6, 'g', 3) + "M";
++    if (bps >= 1000) return QString::number(bps / 1e3, 'g', 4) + "k";
++    return QString::number(bps);
++}
++}
++
++BusStatsWindow::BusStatsWindow(QWidget *parent) : QWidget(parent, Qt::Window)
++{
++    setWindowTitle(tr("Bus Statistics"));
++    resize(900, 560);
++
++    table = new QTableWidget(0, C_COUNT, this);
++    table->setHorizontalHeaderLabels({ tr("Bus"), tr("Bitrate"), tr("Data rate"), tr("Frames/s"), tr("Load %"),
++                                       tr("Peak %"), tr("Frames"), tr("Errors"), tr("State"), tr("TEC"), tr("REC") });
++    table->verticalHeader()->setVisible(false);
++    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
++    table->setSelectionMode(QAbstractItemView::NoSelection);
++    table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
++    table->horizontalHeader()->setSectionResizeMode(C_STATE, QHeaderView::Stretch);
++
++    plot = new QCustomPlot(this);
++    plot->xAxis->setLabel(tr("seconds"));
++    plot->yAxis->setLabel(tr("bus load %"));
++    plot->yAxis->setRange(0, 100);
++    plot->xAxis->setRange(0, HISTORY_SECONDS);
++    plot->legend->setVisible(true);
++    plot->setMinimumHeight(220);
++
++    note = new QLabel(tr("Load is the bus time of the observed frames without bit stuffing (a lower bound). "
++                         "Frames sent by this program are counted only if the device echoes them."), this);
++    note->setWordWrap(true);
++
++    QPushButton *resetButton = new QPushButton(tr("Reset"), this);
++    connect(resetButton, &QPushButton::clicked, this, &BusStatsWindow::reset);
++
++    QHBoxLayout *bottom = new QHBoxLayout;
++    bottom->addWidget(note, 1);
++    bottom->addWidget(resetButton);
++
++    QVBoxLayout *layout = new QVBoxLayout(this);
++    layout->addWidget(table, 0);
++    layout->addWidget(plot, 1);
++    layout->addLayout(bottom);
++
++    connect(CANConManager::getInstance(), &CANConManager::framesReceived, this, &BusStatsWindow::framesReceived);
++    connect(&timer, &QTimer::timeout, this, &BusStatsWindow::tick);
++    timer.start(1000);
++    interval.start();
++    since.start();
++    refreshBitrates();
++    updateTable();
++}
++
++void BusStatsWindow::ensureBus(int idx)
++{
++    if (idx >= buses.size())
++        buses.resize(idx + 1);
++    while (plot->graphCount() < buses.size())
++    {
++        int n = plot->graphCount();
++        QCPGraph *g = plot->addGraph();
++        g->setName(tr("bus %1").arg(n));
++        g->setPen(QPen(PALETTE[n % 6], 2));
++    }
++}
++
++void BusStatsWindow::refreshBitrates()
++{
++    QList<CANConnection *> &conns = CANConManager::getInstance()->getConnections();
++    int base = 0;
++    for (CANConnection *conn : conns)
++    {
++        for (int i = 0; i < conn->getNumBuses(); i++)
++        {
++            ensureBus(base + i);
++            CANBus bus;
++            if (conn->getBusSettings(i, bus))
++            {
++                buses[base + i].nominal = bus.getSpeed() > 0 ? bus.getSpeed() : 0;
++                buses[base + i].data = (bus.isCanFD() && bus.getDataRate() > 0) ? bus.getDataRate() : 0;
++            }
++        }
++        base += conn->getNumBuses();
++    }
++}
++
++/* Bus time of one frame, without bit stuffing, including the 3-bit
++ * interframe space. Classic CAN: 47 bits + 8 per data byte for an 11-bit
++ * identifier, 67 + 8 per byte for 29 bits. CAN FD: arbitration and the
++ * frame end at the nominal rate, ESI..CRC delimiter at the data rate when
++ * the bit rate switch is set. */
++double BusStatsWindow::frameSeconds(const BusStatsFrame &f, quint32 nominal, quint32 data)
++{
++    if (!nominal)
++        return 0;
++    int len = f.payload().size();
++    bool ext = f.hasExtendedFrameFormat();
++    if (!f.hasFlexibleDataRateFormat())
++    {
++        if (f.frameType() == BusStatsFrame::RemoteRequestFrame)
++            len = 0;
++        return double((ext ? 67 : 47) + 8 * len) / nominal;
++    }
++    int arbitration = ext ? 36 : 17;                      /* SOF .. BRS */
++    int crc = len <= 16 ? 17 : 21;
++    int dataPhase = 1 + 4 + 8 * len + 4 + crc + 1;        /* ESI, DLC, data, stuff count, CRC, CRC delimiter */
++    int tail = 2 + 7 + 3;                                  /* ACK, EOF, IFS */
++    double dataRate = (f.hasBitrateSwitch() && data) ? data : nominal;
++    return double(arbitration + tail) / nominal + dataPhase / dataRate;
++}
++
++void BusStatsWindow::framesReceived(CANConnection *conn, QVector<BusStatsFrame> &frames)
++{
++    Q_UNUSED(conn);
++    for (const BusStatsFrame &f : frames)
++    {
++        int idx = frameBus(f);
++        if (idx < 0 || idx > 63)
++            continue;
++        ensureBus(idx);
++        Bus &b = buses[idx];
++
++        if (f.frameType() == BusStatsFrame::ErrorFrame)
++        {
++            b.errors++;
++            QByteArray d = f.payload();
++            if (f.error() & BusStatsFrame::BusOffError)
++                b.state = 3;
++            else if (d.size() >= 2)
++            {
++                quint8 ctrl = quint8(d[1]);
++                if (ctrl & 0x40) b.state = 0;                  /* back to error active */
++                else if (ctrl & 0x30) b.state = 2;             /* RX / TX passive */
++                else if (ctrl & 0x0C) b.state = 1;             /* RX / TX warning */
++            }
++            if (d.size() >= 8)
++            {
++                b.tec = quint8(d[6]);
++                b.rec = quint8(d[7]);
++            }
++            continue;
++        }
++
++        b.frames++;
++        b.intervalFrames++;
++        b.intervalBusy += frameSeconds(f, b.nominal, b.data);
++    }
++}
++
++void BusStatsWindow::tick()
++{
++    double elapsed = interval.restart() / 1000.0;
++    if (elapsed <= 0)
++        return;
++    refreshBitrates();
++    for (Bus &b : buses)
++    {
++        b.rate = b.intervalFrames / elapsed;
++        b.load = b.nominal ? 100.0 * b.intervalBusy / elapsed : 0;
++        if (b.load > b.peak)
++            b.peak = b.load;
++        b.intervalFrames = 0;
++        b.intervalBusy = 0;
++    }
++    updateTable();
++    updatePlot(since.elapsed() / 1000.0);
++}
++
++void BusStatsWindow::reset()
++{
++    for (Bus &b : buses)
++    {
++        quint32 nominal = b.nominal, data = b.data;
++        b = Bus();
++        b.nominal = nominal;
++        b.data = data;
++    }
++    for (int i = 0; i < plot->graphCount(); i++)
++        plot->graph(i)->data()->clear();
++    since.restart();
++    interval.restart();
++    updateTable();
++    updatePlot(0);
++}
++
++void BusStatsWindow::updateTable()
++{
++    table->setRowCount(buses.size());
++    for (int i = 0; i < buses.size(); i++)
++    {
++        const Bus &b = buses[i];
++        const QString cells[C_COUNT] = {
++            QString::number(i),
++            bitrateText(b.nominal),
++            bitrateText(b.data),
++            QString::number(b.rate, 'f', 0),
++            b.nominal ? QString::number(b.load, 'f', 1) : QString("?"),
++            b.nominal ? QString::number(b.peak, 'f', 1) : QString("?"),
++            QString::number(b.frames),
++            QString::number(b.errors),
++            b.state < 0 ? QString("-") : QString(STATE_NAMES[b.state]),
++            b.tec < 0 ? QString("-") : QString::number(b.tec),
++            b.rec < 0 ? QString("-") : QString::number(b.rec),
++        };
++        for (int c = 0; c < C_COUNT; c++)
++        {
++            QTableWidgetItem *item = table->item(i, c);
++            if (!item)
++            {
++                item = new QTableWidgetItem;
++                item->setTextAlignment(c == C_STATE ? (Qt::AlignLeft | Qt::AlignVCenter) : (Qt::AlignRight | Qt::AlignVCenter));
++                table->setItem(i, c, item);
++            }
++            item->setText(cells[c]);
++        }
++        QTableWidgetItem *state = table->item(i, C_STATE);
++        state->setForeground(b.state >= 2 ? QColor(0xd6, 0x27, 0x28) : (b.state == 1 ? QColor(0xff, 0x7f, 0x0e) : palette().color(QPalette::Text)));
++    }
++}
++
++void BusStatsWindow::updatePlot(double t)
++{
++    for (int i = 0; i < buses.size() && i < plot->graphCount(); i++)
++    {
++        QCPGraph *g = plot->graph(i);
++        g->addData(t, buses[i].load);
++        g->data()->removeBefore(t - HISTORY_SECONDS);
++    }
++    plot->xAxis->setRange(t < HISTORY_SECONDS ? 0 : t - HISTORY_SECONDS, t < HISTORY_SECONDS ? HISTORY_SECONDS : t);
++    double top = 10;
++    for (const Bus &b : buses)
++        if (b.peak > top) top = b.peak;
++    plot->yAxis->setRange(0, top >= 50 ? 100 : (top >= 20 ? 50 : 20));
++    plot->replot();
++}
+diff --git a/re/busstatswindow.h b/re/busstatswindow.h
+new file mode 100755
+index 0000000..3dd82ec
+--- /dev/null
++++ b/re/busstatswindow.h
+@@ -0,0 +1,82 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef BUSSTATSWINDOW_H
++#define BUSSTATSWINDOW_H
++
++/*
++ * Bus statistics: per bus load in percent, frame rate, error frames and
++ * the last reported bus state with TEC/REC, plus a load graph. Works with
++ * any SavvyCAN connection; bus state and counters come from error frames
++ * in SocketCAN layout (state in byte 1, TEC/REC in bytes 6/7), which the
++ * USB2CAN Triple connection and SocketCAN devices produce.
++ *
++ * Load is the time the observed frames occupy the bus, computed from
++ * frame length, identifier type and, for CAN FD with bit rate switch, the
++ * data phase at the data bitrate. Bit stuffing is not counted, so the
++ * value is a lower bound (stuffing adds up to about 20 %).
++ */
++
++#include <QWidget>
++#include <QVector>
++#include <QTimer>
++#include <QElapsedTimer>
++
++#include "can_structs.h"
++
++class QTableWidget;
++class QLabel;
++class QCustomPlot;
++class CANConnection;
++
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++typedef CommFrame BusStatsFrame;   /* SavvyCAN QT6WIP branch */
++#else
++typedef CANFrame BusStatsFrame;    /* SavvyCAN master (Qt 5) */
++#endif
++
++class BusStatsWindow : public QWidget
++{
++    Q_OBJECT
++
++public:
++    explicit BusStatsWindow(QWidget *parent = nullptr);
++
++public slots:
++    void framesReceived(CANConnection *conn, QVector<BusStatsFrame> &frames);
++
++private slots:
++    void tick();
++    void reset();
++
++private:
++    struct Bus {
++        quint32 nominal = 0;        /* bit/s, 0 = unknown */
++        quint32 data = 0;           /* CAN FD data phase bit/s, 0 = none */
++        quint64 frames = 0;
++        quint64 errors = 0;
++        quint64 intervalFrames = 0;
++        double  intervalBusy = 0;   /* seconds of bus time in this interval */
++        double  load = 0;
++        double  peak = 0;
++        double  rate = 0;
++        int     state = -1;         /* -1 unknown, 0 active, 1 warning, 2 passive, 3 bus off */
++        int     tec = -1;
++        int     rec = -1;
++    };
++
++    void refreshBitrates();
++    void ensureBus(int idx);
++    static double frameSeconds(const BusStatsFrame &f, quint32 nominal, quint32 data);
++    void updateTable();
++    void updatePlot(double t);
++
++    QVector<Bus>   buses;
++    QTableWidget  *table;
++    QCustomPlot   *plot;
++    QLabel        *note;
++    QTimer         timer;
++    QElapsedTimer  interval;
++    QElapsedTimer  since;
++};
++
++#endif // BUSSTATSWINDOW_H
 diff --git a/ui/newconnectiondialog.ui b/ui/newconnectiondialog.ui
 index e459583..8a79fa3 100644
 --- a/ui/newconnectiondialog.ui

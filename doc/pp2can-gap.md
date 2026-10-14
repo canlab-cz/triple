@@ -56,7 +56,7 @@ or missing details, **no** = not available.
 | ID trap (IDs and counts on the bus) | Frame Data Analysis, Overwrite Mode | yes | |
 | Timing accuracy (period per ID) | Frame Data Analysis | yes | Shows interval statistics per ID |
 | Response meter | none | no | Time from request ID to response ID |
-| Bus load graph with BusOff, TEC/REC, overflow counts | Frames Per Second only | partial | TEC/REC and state changes are now error frames in the log; no load % and no counter graph |
+| Bus load graph with BusOff, TEC/REC, overflow counts | Bus Statistics window (added) | yes | Load % per bus with graph, frames/s, error frames, state and TEC/REC; overflow count still needs the firmware's status layout |
 | Table reader, Data view | Frame Info, Flow View | yes | |
 | Set / Get number | DBC signal editor | partial | |
 | CAN calculator (29-bit, 11+18, MCP2510, SJA1000 registers) | none | no | Small standalone utility |
@@ -78,11 +78,8 @@ or missing details, **no** = not available.
 
 Ranked by value for CANLAB users and by how much is unblocked today.
 
-1. **Bus statistics window.** Bus load in percent per bus (from frame
-   lengths and the configured bitrate), TEC/REC and state over time from
-   the adapter's status messages, error and overflow counts. Covers
-   PP2CAN's Bus load tool and uses data the connection already decodes.
-   Self-contained SavvyCAN window, no upstream changes elsewhere.
+1. ~~Bus statistics window.~~ Done 2026-10-14: RE Tools > Bus
+   Statistics (`gui/savvycan/re/busstatswindow.*`).
 2. **CANopen basics.** NMT master commands, heartbeat / node monitor, SDO
    client (expedited and segmented upload/download), PDO decoding from an
    EDS file. The biggest functional gap; a sizeable but well specified

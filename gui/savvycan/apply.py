@@ -36,6 +36,8 @@ for f in ("triple_serial.h", "triple_serial.cpp"):
     shutil.copy(os.path.join(R, "gui", "savvycan", "connections", f), os.path.join(S, "connections", f))
 shutil.copy(os.path.join(R, "driver", "include", "triple_proto.h"), os.path.join(S, "connections", "triple_proto.h"))
 shutil.copy(os.path.join(R, "driver", "triple_proto.c"), os.path.join(S, "connections", "triple_proto.c"))
+for f in ("busstatswindow.h", "busstatswindow.cpp"):
+    shutil.copy(os.path.join(R, "gui", "savvycan", "re", f), os.path.join(S, "re", f))
 print("copied connection sources into", os.path.join(S, "connections"))
 
 BS = " \\\n"  # backslash-newline continuation in the .pro file
@@ -53,6 +55,32 @@ if os.path.exists(os.path.join(S, "CMakeLists.txt")):
           "    connections/lawicel_serial.cpp connections/lawicel_serial.h\n"
           "    connections/triple_serial.cpp connections/triple_serial.h\n"
           "    connections/triple_proto.c connections/triple_proto.h\n")
+    patch("CMakeLists.txt",
+          "    re/temporalgraphwindow.cpp re/temporalgraphwindow.h\n",
+          "    re/temporalgraphwindow.cpp re/temporalgraphwindow.h\n"
+          "    re/busstatswindow.cpp re/busstatswindow.h\n")
+
+patch("SavvyCAN.pro",
+      "    re/temporalgraphwindow.cpp" + BS,
+      "    re/temporalgraphwindow.cpp" + BS + "    re/busstatswindow.cpp" + BS)
+patch("SavvyCAN.pro",
+      "    re/temporalgraphwindow.h" + BS,
+      "    re/temporalgraphwindow.h" + BS + "    re/busstatswindow.h" + BS)
+
+# Bus Statistics window in the RE Tools menu
+patch("mainwindow.cpp",
+      '#include "connections/connectionwindow.h"\n',
+      '#include "connections/connectionwindow.h"\n#include "re/busstatswindow.h"\n#include <QPointer>\n')
+patch("mainwindow.cpp",
+      "    //Automatically create the connection window so it can be updated even if we never opened it.\n",
+      "    connect(ui->menu_RE_Tools->addAction(tr(\"Bus Statistics\")), &QAction::triggered, this, [this]() {\n"
+      "        static QPointer<BusStatsWindow> busStatsWindow;\n"
+      "        if (!busStatsWindow) busStatsWindow = new BusStatsWindow(this);\n"
+      "        busStatsWindow->show();\n"
+      "        busStatsWindow->raise();\n"
+      "        busStatsWindow->activateWindow();\n"
+      "    });\n\n"
+      "    //Automatically create the connection window so it can be updated even if we never opened it.\n")
 
 patch("connections/canconconst.h",
       "        CANLOGSERVER,\n        NONE\n",

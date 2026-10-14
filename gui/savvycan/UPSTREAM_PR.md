@@ -1,8 +1,16 @@
 # Upstream pull request to collin80/SavvyCAN (draft)
 
-Status: prepared locally, **not opened**. The change is committed on
-branch `usb2can-triple` (commit `9e8ed96`) in the WSL checkout
-`/home/pavel/SavvyCAN`, on top of upstream master `e439670`.
+Status: prepared locally, **not opened**. Branch `usb2can-triple` in the
+WSL checkout `/home/pavel/SavvyCAN`, on top of upstream master `e439670`,
+has two commits:
+
+| Commit | Content |
+|---|---|
+| `5076eab` | Add a connection type for the CANLAB USB2CAN Triple |
+| `a85db3c` | Add a Bus Statistics window (generic, works with every connection) |
+
+They can go in one PR or as two; the window does not depend on the
+connection.
 
 ## Before opening
 
@@ -41,6 +49,12 @@ What the connection does:
   bus off, back to active) from the adapter's status messages, with
   TEC/REC in bytes 6 and 7
 - Triple ports are listed first in the new connection dialog
+
+Second commit: a **Bus Statistics** window (RE Tools menu) for every
+connection: per bus bitrate, frames/s, load % (frame bus time at the
+nominal and, for CAN FD with BRS, the data bitrate; stuffing not
+counted), peak, error frames, bus state with TEC/REC from error frames,
+and a 120 s load graph.
 
 Files:
 

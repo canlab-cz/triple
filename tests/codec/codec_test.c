@@ -206,6 +206,27 @@ int main(void)
 
   captured();
 
+  printf("--- timestamp extension\n");
+  {
+    struct triple_ts t;
+    const u64 W = (u64)1 << 32;
+    memset(&t, 0, sizeof(t));
+    CHECK(triple_ts_extend(&t, 20000000u) == 20000000u);            /* first frame */
+    CHECK(triple_ts_extend(&t, 20100000u) == 20100000u);            /* forward */
+    /* frame from another port, 50 ms older, arriving later: the bug seen
+     * in SavvyCAN, where it was taken as a wrap (+4295 s) */
+    CHECK(triple_ts_extend(&t, 20050000u) == 20050000u);
+    CHECK(triple_ts_extend(&t, 20200000u) == 20200000u);            /* newest still advances */
+    /* real wrap: counter near the top, then small again */
+    CHECK(triple_ts_extend(&t, 0xFFFF0000u) == 0xFFFF0000u);
+    CHECK(triple_ts_extend(&t, 0x00010000u) == W + 0x00010000u);
+    /* reordered frame from just before that wrap */
+    CHECK(triple_ts_extend(&t, 0xFFFFF000u) == 0xFFFFF000u);
+    CHECK(triple_ts_extend(&t, 0x00020000u) == W + 0x00020000u);
+    /* long idle gap (40 min) without a wrap */
+    CHECK(triple_ts_extend(&t, 0x00020000u + 2400000000u) == W + 0x00020000u + 2400000000u);
+  }
+
   printf("%s (%d failures)\n", fails ? "CODEC TEST FAILED" : "CODEC TEST PASSED", fails);
   return fails ? 1 : 0;
 }
