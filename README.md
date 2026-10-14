@@ -75,6 +75,29 @@ CAN3 always runs as CAN FD in the firmware. Without `fd on` the interface
 only sends and receives classic frames and the data bitrate defaults to the
 next value above the nominal one.
 
+### Any bitrate and sample point on CAN3
+
+With the module parameter `fd_bittiming=1`, CAN3 takes any bitrate its
+controller (MCP2517FD, 40 MHz) can reach, sample points, and bit timing in
+time quanta; the kernel computes the timing and the driver sends it as raw
+controller timing. Transmitter delay compensation is automatic when the
+data prescaler is 1 or 2.
+
+```sh
+echo "options usb2cansocketcan fd_bittiming=1" | sudo tee /etc/modprobe.d/usb2cansocketcan.conf
+sudo ip link set can2 type can bitrate 500000 sample-point 0.8 \
+     dbitrate 2000000 dsample-point 0.8 fd on
+sudo ip link set can2 type can bitrate 800000 sample-point 0.8 \
+     dbitrate 4000000 dsample-point 0.8 fd on       # not in the fixed table
+```
+
+Give both sample points as 0.8 to talk to other Triples and to PP2CAN: the
+firmware's fixed table uses about 80 %, and with the kernel's defaults
+(87.5 % nominal below 800 kbit/s, 75 % data) frames with bit rate switching
+were lost in tests. `scripts/triple-attach.sh` adds them when the
+parameter is set. `ip -details link show can2` shows the computed timing,
+and the kernel log the raw values sent.
+
 `ip -details -s link show can0` shows the bus state and the error counters
 reported by the adapter; error frames are delivered to sockets on state
 changes (`candump -e any,0:0,#FFFFFFFF`).
@@ -96,8 +119,8 @@ adapter is plugged in (`etc/systemd/system/usb2can-triple@.service`).
   2000 to 5000 frames/s per adapter (measured through usbipd into WSL2),
   and the firmware drops silently beyond that. Transmit is only limited by
   the bus. `hwtstamp=0` turns the adapter's receive timestamps off.
-* User defined bit timing (the old `-c` option) is not available yet; the
-  firmware's fixed bitrate table is used.
+* CAN1 and CAN2 only take the firmware's fixed bitrates; CAN3 takes any
+  bit timing with `fd_bittiming=1` (see above).
 * The trigger/marker input and the firmware's bus-off indication are not
   decoded yet (bus-off has not been observed on hardware).
 

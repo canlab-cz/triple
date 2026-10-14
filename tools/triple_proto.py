@@ -131,7 +131,10 @@ def encode_frame(f: Frame) -> bytes:
         flags |= FLAG_FD
         if f.brs:
             flags |= FLAG_BRS
-    payload = f.id.to_bytes(4, "big") + bytes([flags]) + (b"" if f.rtr else f.data)
+    # zero padding up to the DLC length: the firmware would fill the gap with
+    # bytes left over from an earlier frame (seen on the bus)
+    data = bytes(f.data) + bytes(dlc2len(flags & 0x0F) - len(f.data))
+    payload = f.id.to_bytes(4, "big") + bytes([flags]) + (b"" if f.rtr else data)
     return build(CMD_TX_CAN_1 + f.port, payload)
 
 
@@ -236,14 +239,52 @@ def settings_fd(code: int, listen_only: bool = False, iso: bool = True, esi: boo
     return build(CMD_SETTINGS, bytes([3]) + code.to_bytes(4, "big") + bytes([int(listen_only), int(iso), int(esi)]))
 
 
+FD_CLOCK_HZ = 40000000      # MCP2517FD system clock on the Triple (verified on the bus)
+
+
 def bittiming_fd(nbrp: int, ntseg1: int, ntseg2: int, nsjw: int, dbrp: int, dtseg1: int, dtseg2: int, dsjw: int,
                  tdco: int, tdcv: int, tdcmod: int, listen_only: bool = False, iso: bool = True, esi: bool = False) -> bytes:
-    """port 3 raw MCP2517FD bit timing (unverified against firmware)."""
+    """port 3 raw MCP2517FD bit timing: register values, each count minus one
+    (0 = divide by 1), 40 MHz clock; tdcmod 0 off, 1 manual, 2 auto."""
     payload = bytes([3])
     for v in (nbrp, ntseg1, ntseg2, nsjw, dbrp, dtseg1, dtseg2, dsjw, tdco, tdcv, tdcmod):
-        payload += v.to_bytes(2, "big")
+        payload += (v & 0xFFFF).to_bytes(2, "big")    # TDCO may be negative
     payload += bytes([int(listen_only), int(iso), int(esi)])
     return build(CMD_BITTIMING, payload)
+
+
+def fd_bittiming_from_tq(nbrp, ntseg1, ntseg2, nsjw, dbrp, dtseg1, dtseg2, dsjw):
+    """Register values (the 11 arguments of bittiming_fd) from a bit timing in
+    time quanta (tseg1 = prop + phase 1). Same rules as the C codec: automatic
+    delay compensation when the data prescaler is 1 or 2. None if out of range."""
+    nsjw, dsjw = nsjw or 1, dsjw or 1
+    if not (1 <= nbrp <= 256 and 2 <= ntseg1 <= 256 and 1 <= ntseg2 <= 128 and nsjw <= 128):
+        return None
+    if not (1 <= dbrp <= 256 and 1 <= dtseg1 <= 32 and 1 <= dtseg2 <= 16 and dsjw <= 16):
+        return None
+    if dbrp <= 2:
+        tdco, tdcmod = min((1 + dtseg1) * dbrp, 63), 2
+    else:
+        tdco, tdcmod = 0, 0
+    return (nbrp - 1, ntseg1 - 1, ntseg2 - 1, nsjw - 1, dbrp - 1, dtseg1 - 1, dtseg2 - 1, dsjw - 1, tdco, 0, tdcmod)
+
+
+def fd_timing_for(bitrate: int, sample_point: float, data: bool):
+    """(brp, tseg1, tseg2, sjw) in time quanta for a bitrate at about the
+    given sample point, smallest prescaler first; None if not reachable."""
+    lim_t1, lim_t2 = (32, 16) if data else (256, 128)
+    for brp in range(1, 257):
+        tq = round(FD_CLOCK_HZ / brp / bitrate)
+        if tq > 1 + lim_t1 + lim_t2:
+            continue
+        if tq < 4:
+            return None
+        t2 = min(max(1, round(tq * (1 - sample_point))), lim_t2)
+        t1 = tq - 1 - t2
+        if t1 > lim_t1:
+            continue
+        return brp, t1, t2, t2
+    return None
 
 
 def timestamp_mode(on: bool) -> bytes:

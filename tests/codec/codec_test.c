@@ -204,6 +204,22 @@ int main(void)
   f.port = 2; f.fd = true; f.len = 64;
   CHECK(triple_encode_frame(&f, wire, 72) < 0);              /* output too small */
 
+  /* 10 data bytes in a 12 byte CAN FD frame: zero padding is sent, else the
+   * firmware fills the gap with bytes of an earlier frame */
+  {
+    struct triple_msg m;
+    int n, k;
+    memset(&f, 0, sizeof(f));
+    f.port = 2; f.fd = true; f.id = 0x345; f.len = 10;
+    for (k = 0; k < 10; k++)
+      f.data[k] = (u8)(0xA0 + k);
+    f.data[10] = 0x44; f.data[11] = 0x55;                     /* stale bytes beyond len */
+    n = triple_encode_frame(&f, wire, sizeof(wire));
+    CHECK(n == 1 + 1 + 1 + 4 + 1 + 12 + 1);                   /* start, length, cmd, id, flags, 12 data, end */
+    CHECK(triple_decode(wire, (size_t)n, &m) == TRIPLE_MSG_FRAME);
+    CHECK(m.frame.len == 12 && m.frame.data[9] == 0xA9 && m.frame.data[10] == 0 && m.frame.data[11] == 0);
+  }
+
   captured();
 
   printf("--- timestamp extension\n");
@@ -225,6 +241,50 @@ int main(void)
     CHECK(triple_ts_extend(&t, 0x00020000u) == W + 0x00020000u);
     /* long idle gap (40 min) without a wrap */
     CHECK(triple_ts_extend(&t, 0x00020000u + 2400000000u) == W + 0x00020000u + 2400000000u);
+  }
+
+  printf("--- CAN FD bit timing (command 0x89)\n");
+  {
+    struct triple_fd_bittiming bt;
+    u32 brp, t1, t2, sjw;
+    u8 ref[64];
+    int n, rn;
+
+    /* 500k/2M at 40 MHz as the Linux CAN core computes it (80 TQ, 80 %;
+     * 20 TQ, 80 %), the register values of the bus test 0:62:15:15:0:14:3:3 */
+    CHECK(triple_fd_bittiming_from_tq(&bt, 1, 63, 16, 16, 1, 15, 4, 4) == 0);
+    CHECK(bt.nbrp == 0 && bt.ntseg1 == 62 && bt.ntseg2 == 15 && bt.nsjw == 15);
+    CHECK(bt.dbrp == 0 && bt.dtseg1 == 14 && bt.dtseg2 == 3 && bt.dsjw == 3);
+    CHECK(bt.tdcmod == 2 && bt.tdco == 16 && bt.tdcv == 0);
+    /* 500k/5M as in the bus test: offset at the sample point, 7 cycles */
+    CHECK(triple_fd_bittiming_from_tq(&bt, 1, 63, 16, 16, 1, 6, 1, 1) == 0 && bt.tdco == 7 && bt.tdcmod == 2);
+    /* data prescaler 4: no delay compensation; sjw 0 taken as 1 */
+    CHECK(triple_fd_bittiming_from_tq(&bt, 2, 63, 16, 0, 4, 15, 4, 0) == 0);
+    CHECK(bt.tdcmod == 0 && bt.tdco == 0 && bt.nsjw == 0 && bt.dsjw == 0 && bt.nbrp == 1 && bt.dbrp == 3);
+    /* offset capped at 63 */
+    CHECK(triple_fd_bittiming_from_tq(&bt, 1, 63, 16, 16, 2, 32, 16, 16) == 0 && bt.tdco == 63);
+    /* out of range */
+    CHECK(triple_fd_bittiming_from_tq(&bt, 0, 63, 16, 16, 1, 15, 4, 4) < 0);
+    CHECK(triple_fd_bittiming_from_tq(&bt, 1, 63, 16, 16, 1, 33, 4, 4) < 0);
+    CHECK(triple_fd_bittiming_from_tq(&bt, 1, 1, 16, 16, 1, 15, 4, 4) < 0);
+    CHECK(triple_fd_bittiming_from_tq(&bt, 1, 63, 129, 16, 1, 15, 4, 4) < 0);
+
+    /* encoded command, byte for byte as sent in the bus test (tdco 15 there) */
+    CHECK(triple_fd_bittiming_from_tq(&bt, 1, 63, 16, 16, 1, 15, 4, 4) == 0);
+    bt.tdco = 15;
+    n = triple_encode_bittiming_fd(wire, &bt, false, true, false);
+    rn = parse_hex("0f 21 89 03 00 00 00 3e 00 1f 0f 00 1f 0f 00 00 00 0e 00 03 00 03 00 1f 0f 00 00 00 02 00 01 00 ef", ref);
+    CHECK(n == rn && memcmp(wire, ref, (size_t)n) == 0);
+
+    /* data timing when the interface is not in FD mode */
+    CHECK(triple_fd_data_timing(2000000, &brp, &t1, &t2, &sjw) == 2000000);
+    CHECK(brp == 1 && t1 + t2 + 1 == 20 && t2 == 4 && sjw == 4);
+    CHECK(triple_fd_data_timing(500000, &brp, &t1, &t2, &sjw) == 500000 && brp == 2 && t1 + t2 + 1 == 40);
+    CHECK(triple_fd_data_timing(10000000, &brp, &t1, &t2, &sjw) == 10000000 && brp == 1 && t1 == 2 && t2 == 1);
+    CHECK(triple_fd_data_timing(6700000, &brp, &t1, &t2, &sjw) == 6666666);
+    CHECK(triple_fd_data_timing(250000, &brp, &t1, &t2, &sjw) == 250000);
+    CHECK(triple_fd_data_timing(20000000, &brp, &t1, &t2, &sjw) == 0);
+    CHECK(triple_fd_data_timing(0, &brp, &t1, &t2, &sjw) == 0);
   }
 
   printf("%s (%d failures)\n", fails ? "CODEC TEST FAILED" : "CODEC TEST PASSED", fails);

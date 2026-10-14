@@ -113,6 +113,14 @@ DLC code to length, CAN FD encoding (classic CAN only uses 0..8):
 |---|---|---|---|---|---|---|---|---|
 | Bytes | 0..8 | 12 | 16 | 20 | 24 | 32 | 48 | 64 |
 
+Toward the adapter, send all bytes of the DLC length. A frame with fewer
+data bytes than its DLC code stands for (say 10 bytes with code 9, 12
+bytes) goes out on the bus with the gap filled from the firmware's buffer,
+i.e. with bytes of an earlier frame (*verified*: a 10-byte frame sent after
+a 20-byte one carried that frame's bytes 11 and 12). The codecs pad with
+zeros since 2026-10-14; the Linux driver was not affected because the
+kernel already rounds CAN FD lengths up to a DLC step.
+
 Timestamp: 1 µs resolution, 32 bit, big endian, counts from an unknown
 origin (it started near 2.7 s after the timestamp mode was switched on in
 the capture) and wraps every 71.6 minutes. Consecutive frames sent 100 ms
@@ -126,7 +134,7 @@ apart showed deltas of 102 ms including host scheduling (*verified*).
 | `0xA1` | TX on CAN2 | CAN frame payload |
 | `0xA2` | TX on CAN3 | CAN frame payload, FD flags allowed |
 | `0x88` | SETTINGS | port settings, two layouts, see 4.1 |
-| `0x89` | BITTIMING | raw MCP2517FD bit timing for CAN3, see 4.2 (*unverified*) |
+| `0x89` | BITTIMING | raw MCP2517FD bit timing for CAN3, see 4.2 (*verified*) |
 | `0x8B` | TIMESTAMP | 1 byte: `0` off, `1` on. Selects 0xA0.. or 0xB0.. receive commands |
 | `0x8D` | BUFFER_MODE | 4 bytes big endian, the Linux driver sends `1` (*purpose not documented; always sent since v1.x*) |
 | `0x90` | FW_VERSION | no payload, answered with 0x90 (section 5) |
@@ -182,34 +190,64 @@ Rule: data rate must be above the nominal rate; both from the lists.
 Formula: `code = nominal_k * 10000 + data_k` when `data_k >= 1000`, else
 `nominal_k * 1000 + data_k`.
 
-### 4.2 BITTIMING (0x89), CAN3 raw bit timing (*unverified*)
+### 4.2 BITTIMING (0x89), CAN3 raw bit timing (*verified*)
 
-Layout from the v1.x daemon (`tripled -c`), never exercised by the v2
-driver. All values 16 bit big endian unless noted; see the MCP2517FD data
-sheet for their meaning.
+Sets CAN3 from raw MCP2517FD bit timing instead of the speed code table of
+4.1. Layout from the v1.x daemon (`tripled -c`); all values 16 bit big
+endian unless noted.
 
 ```
 offset  content
 0       port, 3
-1       NBRP     nominal bit rate prescaler
-3       NTSEG1   nominal time segment 1
-5       NTSEG2   nominal time segment 2
-7       NSJW     nominal synchronisation jump width
-9       DBRP     data bit rate prescaler
-11      DTSEG1
-13      DTSEG2
-15      DSJW
-17      TDCO     transmitter delay compensation offset
-19      TDCV     transmitter delay compensation value
-21      TDCMOD   0 off, 1 manual, 2 auto
+1       NBRP     nominal bit rate prescaler      \
+3       NTSEG1   nominal time segment 1           |
+5       NTSEG2   nominal time segment 2           |  register values:
+7       NSJW     nominal sync jump width          |  the count minus one
+9       DBRP     data bit rate prescaler          |  (0 = divide by 1,
+11      DTSEG1   data time segment 1              |   NTSEG1 61 = 62 TQ)
+13      DTSEG2   data time segment 2              |
+15      DSJW     data sync jump width            /
+17      TDCO     transmitter delay compensation offset, clock cycles, signed
+19      TDCV     transmitter delay compensation value (0 with automatic mode)
+21      TDCMOD   0 off, 1 manual, 2 automatic
 23      listen only (1 byte)
-24      ISO CRC  (1 byte)
-25      ESI      (1 byte)
+24      ISO CRC  (1 byte), as in 4.1
+25      ESI      (1 byte), as in 4.1
 ```
 
-Note: the v1.x daemon wrote `length + 1` bytes to the tty for this command,
-i.e. one garbage byte after the end byte. Whether the firmware minds is
-unknown.
+TSEG1 is propagation plus phase segment 1 (`prop_seg + phase_seg1` in
+Linux terms). The controller runs at 40 MHz: one time quantum is
+`(BRP + 1) * 25 ns`, a bit is `1 + (TSEG1 + 1) + (TSEG2 + 1)` quanta.
+Example, 500 kbit/s and 2 Mbit/s at 80 % sample points with automatic
+delay compensation: `0:62:15:15 / 0:14:3:3`, TDCO 16, TDCMOD 2.
+
+Verified 2026-10-14 between two adapters wired back to back, one set with
+this command, the other with the speed codes of 4.1, CAN FD frames with
+and without BRS in both directions:
+
+| Raw timing | Other side | Result |
+|---|---|---|
+| 500k/2M (`0:62:15:15:0:14:3:3`, TDC auto) | 500k/2M | works |
+| same values with NBRP and DBRP 1 (250k/1M) | 500k/2M | nothing gets through, TX errors |
+| same values with NBRP and DBRP 1 | 250k/1M | works |
+| 500k nominal, DBRP 1 (1M data) | 500k/2M | classic frames pass, BRS frames fail |
+| 500k/5M (`0:5:0:0` data, TDCO 7, auto) | 500k/5M | works |
+| 800k/4M (`0:38:9:9:0:6:1:1`, TDCO 8, auto) | same raw timing | works (not possible with 4.1) |
+
+So the values are register encoded (a "count" reading would make the first
+row an invalid prescaler 0), the clock is 40 MHz (20 MHz would have given
+250k/1M in the first row), and the data phase fields are applied
+separately. The command needs no trailing byte (the v1.x daemon wrote one
+garbage byte after the end byte; not needed).
+
+Sample point: the speed code table uses about 80 % in both phases. Kernel
+computed timing with the Linux defaults (87.5 % nominal below 800 kbit/s,
+75 % data) lost BRS frames coming from an adapter set by speed code at
+500k/2M and 250k/1M, and the other way round at 125k/6.7M; with 80 % /
+80 % all four tested pairs (also 1M/5M) worked both ways. In CAN FD the
+bit rate switches at the nominal sample point, so nodes need matching
+nominal sample points. The Linux driver uses this command with
+`fd_bittiming=1`.
 
 ## 5. Adapter to host
 

@@ -10,6 +10,7 @@ Examples:
     triple_dump.py /dev/ttyACM0 --send 1 123#11223344 # send one frame on CAN1 and keep dumping
     triple_dump.py /dev/ttyACM0 --status              # also print raw status messages
     triple_dump.py /dev/ttyACM0 --log frames.log      # candump-like log file
+    triple_dump.py COM7 --can3-timing 0:62:15:15:0:14:3:3:15:0:2   # CAN3 raw bit timing
 
 The Linux kernel driver must NOT be attached to the port at the same time.
 """
@@ -53,6 +54,8 @@ def main() -> int:
     ap.add_argument("--can3", default="125000/6700000", help="CAN3 nominal/data bitrate (default 125000/6700000)")
     ap.add_argument("--listen-only", action="store_true", help="all ports listen only")
     ap.add_argument("--non-iso", action="store_true", help="CAN3 non-ISO CAN FD")
+    ap.add_argument("--can3-timing", metavar="NBRP:NTSEG1:NTSEG2:NSJW:DBRP:DTSEG1:DTSEG2:DSJW:TDCO:TDCV:TDCMOD",
+                    help="CAN3 raw MCP2517FD bit timing (command 0x89) instead of --can3; see doc/protocol.md 4.2")
     ap.add_argument("--no-timestamp", action="store_true", help="do not ask the adapter for timestamps")
     ap.add_argument("--status", action="store_true", help="print status messages (error counters) when they change")
     ap.add_argument("--raw", action="store_true", help="hex dump every message")
@@ -67,13 +70,29 @@ def main() -> int:
     nominal = int(nominal)
     data = int(data) if data else tp.fd_default_data_bitrate(nominal)
     code = tp.fd_speed_code(nominal, data)
-    if not k1 or not k2 or not code:
+    raw = None
+    if not code and not args.can3_timing:
+        # not in the firmware table: raw controller timing at 80 % sample
+        # points, which is what the table uses (doc/protocol.md 4.2)
+        n, d = tp.fd_timing_for(nominal, 0.8, False), tp.fd_timing_for(data, 0.8, True)
+        raw = tp.fd_bittiming_from_tq(*n, *d) if n and d else None
+    if not k1 or not k2 or not (code or raw or args.can3_timing):
         sys.exit("unsupported bitrate; see doc/protocol.md section 4.1")
 
     ser = serial.Serial(args.port, 115200, timeout=0.05)
+    if args.can3_timing:
+        t = [int(v, 0) for v in args.can3_timing.split(":")]
+        if len(t) != 11:
+            sys.exit("--can3-timing needs eleven values")
+        can3 = tp.bittiming_fd(*t, listen_only=args.listen_only, iso=not args.non_iso)
+    elif raw:
+        can3 = tp.bittiming_fd(*raw, listen_only=args.listen_only, iso=not args.non_iso)
+        args.can3_timing = ":".join(str(v) for v in raw)
+    else:
+        can3 = tp.settings_fd(code, args.listen_only, not args.non_iso)
     cmds = [tp.buffer_mode(1), tp.timestamp_mode(not args.no_timestamp),
             tp.settings_can(1, k1, args.listen_only), tp.settings_can(2, k2, args.listen_only),
-            tp.settings_fd(code, args.listen_only, not args.non_iso), tp.fw_version_req()]
+            can3, tp.fw_version_req()]
     for c in cmds:
         ser.write(c)
         time.sleep(0.02)
@@ -83,7 +102,9 @@ def main() -> int:
             sys.exit("frame too long for the adapter (%d bytes on the wire, limit %d)" % (len(wire), tp.FW_MAX_WIRE_LEN))
         ser.write(wire)
 
-    print("CAN1 %d, CAN2 %d, CAN3 FD %d/%d%s" % (args.can1, args.can2, nominal, data, ", listen only" if args.listen_only else ""))
+    print("CAN1 %d, CAN2 %d, CAN3 FD %s%s" % (args.can1, args.can2,
+                                             "timing " + args.can3_timing if args.can3_timing else "%d/%d" % (nominal, data),
+                                             ", listen only" if args.listen_only else ""))
     log = open(args.log, "a") if args.log else None
     parser = tp.Parser()
     last_status = None

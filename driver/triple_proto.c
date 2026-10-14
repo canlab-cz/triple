@@ -81,9 +81,12 @@ int triple_encode_frame(const struct triple_frame *f, u8 *out, size_t outsz)
   u8 tmp[TRIPLE_MTU];
   u8 flags;
   int n = 0;
-  int i;
+  int i, dlen;
 
   if (f->port >= TRIPLE_PORTS || f->len > TRIPLE_MAX_DATA || (!f->fd && f->len > 8))
+    return -1;
+  dlen = f->rtr ? 0 : triple_dlc2len(triple_len2dlc(f->len));
+  if (dlen > TRIPLE_MAX_DATA)                   /* cannot happen; bounds the loop for the compiler */
     return -1;
 
   tmp[n++] = TRIPLE_FIRST_BYTE;
@@ -106,9 +109,11 @@ int triple_encode_frame(const struct triple_frame *f, u8 *out, size_t outsz)
   }
   n += triple_put(tmp + n, flags);
 
-  if (!f->rtr)
-    for (i = 0; i < f->len; i++)
-      n += triple_put(tmp + n, f->data[i]);
+  /* CAN FD lengths between the DLC steps (e.g. 10 bytes in a 12 byte
+   * frame): send the zero padding too, the firmware would otherwise fill
+   * the gap with bytes left over from an earlier frame (seen on the bus) */
+  for (i = 0; i < dlen; i++)
+    n += triple_put(tmp + n, i < f->len ? f->data[i] : 0);
 
   tmp[n++] = TRIPLE_LAST_BYTE;
   tmp[1] = (u8)n;
@@ -284,6 +289,72 @@ int triple_encode_bittiming_fd(u8 *out, const struct triple_fd_bittiming *bt, bo
   payload[24] = iso ? 1 : 0;
   payload[25] = esi ? 1 : 0;
   return triple_build(out, TRIPLE_CMD_BITTIMING, payload, sizeof(payload));
+}
+
+int triple_fd_bittiming_from_tq(struct triple_fd_bittiming *bt,
+                                u32 nbrp, u32 ntseg1, u32 ntseg2, u32 nsjw,
+                                u32 dbrp, u32 dtseg1, u32 dtseg2, u32 dsjw)
+{
+  u32 tdco;
+
+  if (!nsjw)
+    nsjw = 1;
+  if (!dsjw)
+    dsjw = 1;
+  if (nbrp < 1 || nbrp > 256 || ntseg1 < 2 || ntseg1 > 256 || ntseg2 < 1 || ntseg2 > 128 || nsjw > 128)
+    return -1;
+  if (dbrp < 1 || dbrp > 256 || dtseg1 < 1 || dtseg1 > 32 || dtseg2 < 1 || dtseg2 > 16 || dsjw > 16)
+    return -1;
+  bt->nbrp = (u16)(nbrp - 1);
+  bt->ntseg1 = (u16)(ntseg1 - 1);
+  bt->ntseg2 = (u16)(ntseg2 - 1);
+  bt->nsjw = (u16)(nsjw - 1);
+  bt->dbrp = (u16)(dbrp - 1);
+  bt->dtseg1 = (u16)(dtseg1 - 1);
+  bt->dtseg2 = (u16)(dtseg2 - 1);
+  bt->dsjw = (u16)(dsjw - 1);
+  bt->tdcv = 0;
+  if (dbrp <= 2)
+  {
+    tdco = (1 + dtseg1) * dbrp;                 /* data sample point in clock cycles */
+    bt->tdco = (u16)(tdco > 63 ? 63 : tdco);
+    bt->tdcmod = 2;                             /* automatic: the controller measures TDCV */
+  }
+  else
+  {
+    bt->tdco = 0;
+    bt->tdcmod = 0;
+  }
+  return 0;
+}
+
+u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw)
+{
+  u32 b, tq, t2;
+
+  if (!bitrate)
+    return 0;
+  for (b = 1; b <= 256; b++)
+  {
+    tq = (TRIPLE_FD_CLOCK_HZ / b + bitrate / 2) / bitrate;   /* time quanta per bit, rounded */
+    if (tq > 49)                                /* 1 + 32 + 16 */
+      continue;
+    if (tq < 4)
+      return 0;
+    t2 = (tq * 20 + 50) / 100;
+    if (t2 < 1)
+      t2 = 1;
+    if (t2 > 16)
+      t2 = 16;
+    if (tq - 1 - t2 > 32)
+      continue;
+    *brp = b;
+    *tseg1 = tq - 1 - t2;
+    *tseg2 = t2;
+    *sjw = t2;
+    return TRIPLE_FD_CLOCK_HZ / (b * tq);
+  }
+  return 0;
 }
 
 int triple_encode_timestamp_mode(u8 *out, bool on)

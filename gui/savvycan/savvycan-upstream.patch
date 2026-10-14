@@ -228,10 +228,10 @@ index 387a4fb..1053355 100644
  };
 diff --git a/connections/triple_proto.c b/connections/triple_proto.c
 new file mode 100755
-index 0000000..019d349
+index 0000000..a46fa23
 --- /dev/null
 +++ b/connections/triple_proto.c
-@@ -0,0 +1,365 @@
+@@ -0,0 +1,436 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +/*
@@ -315,9 +315,12 @@ index 0000000..019d349
 +  u8 tmp[TRIPLE_MTU];
 +  u8 flags;
 +  int n = 0;
-+  int i;
++  int i, dlen;
 +
 +  if (f->port >= TRIPLE_PORTS || f->len > TRIPLE_MAX_DATA || (!f->fd && f->len > 8))
++    return -1;
++  dlen = f->rtr ? 0 : triple_dlc2len(triple_len2dlc(f->len));
++  if (dlen > TRIPLE_MAX_DATA)                   /* cannot happen; bounds the loop for the compiler */
 +    return -1;
 +
 +  tmp[n++] = TRIPLE_FIRST_BYTE;
@@ -340,9 +343,11 @@ index 0000000..019d349
 +  }
 +  n += triple_put(tmp + n, flags);
 +
-+  if (!f->rtr)
-+    for (i = 0; i < f->len; i++)
-+      n += triple_put(tmp + n, f->data[i]);
++  /* CAN FD lengths between the DLC steps (e.g. 10 bytes in a 12 byte
++   * frame): send the zero padding too, the firmware would otherwise fill
++   * the gap with bytes left over from an earlier frame (seen on the bus) */
++  for (i = 0; i < dlen; i++)
++    n += triple_put(tmp + n, i < f->len ? f->data[i] : 0);
 +
 +  tmp[n++] = TRIPLE_LAST_BYTE;
 +  tmp[1] = (u8)n;
@@ -520,6 +525,72 @@ index 0000000..019d349
 +  return triple_build(out, TRIPLE_CMD_BITTIMING, payload, sizeof(payload));
 +}
 +
++int triple_fd_bittiming_from_tq(struct triple_fd_bittiming *bt,
++                                u32 nbrp, u32 ntseg1, u32 ntseg2, u32 nsjw,
++                                u32 dbrp, u32 dtseg1, u32 dtseg2, u32 dsjw)
++{
++  u32 tdco;
++
++  if (!nsjw)
++    nsjw = 1;
++  if (!dsjw)
++    dsjw = 1;
++  if (nbrp < 1 || nbrp > 256 || ntseg1 < 2 || ntseg1 > 256 || ntseg2 < 1 || ntseg2 > 128 || nsjw > 128)
++    return -1;
++  if (dbrp < 1 || dbrp > 256 || dtseg1 < 1 || dtseg1 > 32 || dtseg2 < 1 || dtseg2 > 16 || dsjw > 16)
++    return -1;
++  bt->nbrp = (u16)(nbrp - 1);
++  bt->ntseg1 = (u16)(ntseg1 - 1);
++  bt->ntseg2 = (u16)(ntseg2 - 1);
++  bt->nsjw = (u16)(nsjw - 1);
++  bt->dbrp = (u16)(dbrp - 1);
++  bt->dtseg1 = (u16)(dtseg1 - 1);
++  bt->dtseg2 = (u16)(dtseg2 - 1);
++  bt->dsjw = (u16)(dsjw - 1);
++  bt->tdcv = 0;
++  if (dbrp <= 2)
++  {
++    tdco = (1 + dtseg1) * dbrp;                 /* data sample point in clock cycles */
++    bt->tdco = (u16)(tdco > 63 ? 63 : tdco);
++    bt->tdcmod = 2;                             /* automatic: the controller measures TDCV */
++  }
++  else
++  {
++    bt->tdco = 0;
++    bt->tdcmod = 0;
++  }
++  return 0;
++}
++
++u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw)
++{
++  u32 b, tq, t2;
++
++  if (!bitrate)
++    return 0;
++  for (b = 1; b <= 256; b++)
++  {
++    tq = (TRIPLE_FD_CLOCK_HZ / b + bitrate / 2) / bitrate;   /* time quanta per bit, rounded */
++    if (tq > 49)                                /* 1 + 32 + 16 */
++      continue;
++    if (tq < 4)
++      return 0;
++    t2 = (tq * 20 + 50) / 100;
++    if (t2 < 1)
++      t2 = 1;
++    if (t2 > 16)
++      t2 = 16;
++    if (tq - 1 - t2 > 32)
++      continue;
++    *brp = b;
++    *tseg1 = tq - 1 - t2;
++    *tseg2 = t2;
++    *sjw = t2;
++    return TRIPLE_FD_CLOCK_HZ / (b * tq);
++  }
++  return 0;
++}
++
 +int triple_encode_timestamp_mode(u8 *out, bool on)
 +{
 +  u8 payload[1] = { on ? 1 : 0 };
@@ -599,10 +670,10 @@ index 0000000..019d349
 +}
 diff --git a/connections/triple_proto.h b/connections/triple_proto.h
 new file mode 100755
-index 0000000..9e6df3d
+index 0000000..7291fab
 --- /dev/null
 +++ b/connections/triple_proto.h
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,245 @@
 +/* SPDX-License-Identifier: MIT */
 +/* Copyright (c) 2026 CANLAB s.r.o. */
 +/*
@@ -775,14 +846,36 @@ index 0000000..9e6df3d
 +/* Port 3 (CAN FD): combined speed code (see triple_fd_speed_code). */
 +int triple_encode_settings_fd(u8 *out, u32 code, bool listen_only, bool iso, bool esi);
 +
-+/* Port 3 raw MCP2517FD bit timing (TRIPLE_CMD_BITTIMING). Layout taken
-+ * from the v1.x daemon, not yet exercised against firmware. */
++/* Port 3 raw MCP2517FD bit timing (TRIPLE_CMD_BITTIMING). The values are
++ * the controller's register fields, i.e. each count minus one (0 = divide
++ * by 1), at a 40 MHz system clock. Verified on the bus against the speed
++ * code settings: 500k/2M, 250k/1M, 500k/5M (doc/protocol.md 4.2). */
++#define TRIPLE_FD_CLOCK_HZ 40000000u
++
 +struct triple_fd_bittiming {
 +  u16 nbrp, ntseg1, ntseg2, nsjw;     /* nominal */
 +  u16 dbrp, dtseg1, dtseg2, dsjw;     /* data */
-+  u16 tdco, tdcv, tdcmod;             /* transmitter delay compensation, tdcmod 0 off 1 manual 2 auto */
++  u16 tdco, tdcv, tdcmod;             /* transmitter delay compensation, tdcmod 0 off 1 manual 2 auto;
++                                         tdco is signed, in clock cycles */
 +};
 +int triple_encode_bittiming_fd(u8 *out, const struct triple_fd_bittiming *bt, bool listen_only, bool iso, bool esi);
++
++/* Register values from a bit timing in time quanta, as the Linux CAN core
++ * or a bit timing calculator gives it: prescaler, tseg1 (= propagation +
++ * phase segment 1), tseg2 (phase segment 2), sjw (0 is taken as 1).
++ * Transmitter delay compensation is automatic when the data prescaler is
++ * 1 or 2, with the offset at the data sample point in clock cycles (at
++ * most 63), and off otherwise. Returns 0, or -1 if a value is outside the
++ * controller's range (nominal brp 1..256, tseg1 2..256, tseg2 and sjw
++ * 1..128; data brp 1..256, tseg1 1..32, tseg2 and sjw 1..16). */
++int triple_fd_bittiming_from_tq(struct triple_fd_bittiming *bt,
++                                u32 nbrp, u32 ntseg1, u32 ntseg2, u32 nsjw,
++                                u32 dbrp, u32 dtseg1, u32 dtseg2, u32 dsjw);
++
++/* Data phase timing in time quanta for a bitrate, sample point about
++ * 80 %, for when the interface is not in FD mode (the controller always
++ * runs CAN FD). Returns the bitrate reached, or 0 if none is possible. */
++u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw);
 +
 +int triple_encode_timestamp_mode(u8 *out, bool on);
 +int triple_encode_buffer_mode(u8 *out, u32 mode);

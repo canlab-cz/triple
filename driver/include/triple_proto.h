@@ -170,14 +170,36 @@ int triple_encode_settings_can(u8 *out, u8 port, u16 kbit, bool listen_only);
 /* Port 3 (CAN FD): combined speed code (see triple_fd_speed_code). */
 int triple_encode_settings_fd(u8 *out, u32 code, bool listen_only, bool iso, bool esi);
 
-/* Port 3 raw MCP2517FD bit timing (TRIPLE_CMD_BITTIMING). Layout taken
- * from the v1.x daemon, not yet exercised against firmware. */
+/* Port 3 raw MCP2517FD bit timing (TRIPLE_CMD_BITTIMING). The values are
+ * the controller's register fields, i.e. each count minus one (0 = divide
+ * by 1), at a 40 MHz system clock. Verified on the bus against the speed
+ * code settings: 500k/2M, 250k/1M, 500k/5M (doc/protocol.md 4.2). */
+#define TRIPLE_FD_CLOCK_HZ 40000000u
+
 struct triple_fd_bittiming {
   u16 nbrp, ntseg1, ntseg2, nsjw;     /* nominal */
   u16 dbrp, dtseg1, dtseg2, dsjw;     /* data */
-  u16 tdco, tdcv, tdcmod;             /* transmitter delay compensation, tdcmod 0 off 1 manual 2 auto */
+  u16 tdco, tdcv, tdcmod;             /* transmitter delay compensation, tdcmod 0 off 1 manual 2 auto;
+                                         tdco is signed, in clock cycles */
 };
 int triple_encode_bittiming_fd(u8 *out, const struct triple_fd_bittiming *bt, bool listen_only, bool iso, bool esi);
+
+/* Register values from a bit timing in time quanta, as the Linux CAN core
+ * or a bit timing calculator gives it: prescaler, tseg1 (= propagation +
+ * phase segment 1), tseg2 (phase segment 2), sjw (0 is taken as 1).
+ * Transmitter delay compensation is automatic when the data prescaler is
+ * 1 or 2, with the offset at the data sample point in clock cycles (at
+ * most 63), and off otherwise. Returns 0, or -1 if a value is outside the
+ * controller's range (nominal brp 1..256, tseg1 2..256, tseg2 and sjw
+ * 1..128; data brp 1..256, tseg1 1..32, tseg2 and sjw 1..16). */
+int triple_fd_bittiming_from_tq(struct triple_fd_bittiming *bt,
+                                u32 nbrp, u32 ntseg1, u32 ntseg2, u32 nsjw,
+                                u32 dbrp, u32 dtseg1, u32 dtseg2, u32 dsjw);
+
+/* Data phase timing in time quanta for a bitrate, sample point about
+ * 80 %, for when the interface is not in FD mode (the controller always
+ * runs CAN FD). Returns the bitrate reached, or 0 if none is possible. */
+u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw);
 
 int triple_encode_timestamp_mode(u8 *out, bool on);
 int triple_encode_buffer_mode(u8 *out, u32 mode);

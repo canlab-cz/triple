@@ -83,6 +83,26 @@ check(tp.fw_version_req() == hx("0f 04 90 ef"), "fw request")
 check(tp.bittiming_fd(1, 62, 17, 17, 1, 15, 4, 4, 0, 0, 2) ==
       hx("0f 1f 89 03 00 01 00 3e 00 11 00 11 00 01 00 1f 0f 00 04 00 04 00 00 00 00 00 02 00 01 00 ef"), "raw bit timing (same vector as the C test)")
 
+print("--- CAN FD padding to the DLC length")
+w = tp.encode_frame(tp.Frame(port=2, id=0x345, fd=True, data=bytes(range(0xA0, 0xAA))))
+kind, g = tp.decode(w)
+check(kind == "frame" and len(g.data) == 12 and g.data[:10] == bytes(range(0xA0, 0xAA)) and g.data[10:] == bytes(2),
+      "10 bytes sent as 12 with zero padding")
+
+print("--- CAN FD raw bit timing (verified on the bus)")
+regs = tp.fd_bittiming_from_tq(1, 63, 16, 16, 1, 15, 4, 4)
+check(regs == (0, 62, 15, 15, 0, 14, 3, 3, 16, 0, 2), "500k/2M registers %r" % (regs,))
+check(tp.fd_bittiming_from_tq(1, 63, 16, 16, 1, 6, 1, 1)[8:] == (7, 0, 2), "500k/5M delay compensation")
+check(tp.fd_bittiming_from_tq(2, 63, 16, 0, 4, 15, 4, 0)[8:] == (0, 0, 0), "no compensation above prescaler 2")
+check(tp.fd_bittiming_from_tq(1, 63, 16, 16, 1, 33, 4, 4) is None, "data tseg1 out of range")
+check(tp.bittiming_fd(0, 62, 15, 15, 0, 14, 3, 3, 15, 0, 2) ==
+      hx("0f 21 89 03 00 00 00 3e 00 1f 0f 00 1f 0f 00 00 00 0e 00 03 00 03 00 1f 0f 00 00 00 02 00 01 00 ef"), "bus test 500k/2M bytes")
+check(tp.fd_timing_for(800000, 0.8, False) == (1, 39, 10, 10), "800k nominal at 80 %")
+check(tp.fd_timing_for(4000000, 0.8, True) == (1, 7, 2, 2), "4M data at 80 %")
+check(tp.fd_timing_for(500000, 0.8, True) == (2, 31, 8, 8), "500k data needs prescaler 2")
+check(tp.fd_timing_for(20000000, 0.8, True) is None, "20M unreachable")
+check(tp.bittiming_fd(*tp.fd_bittiming_from_tq(1, 39, 10, 10, 1, 7, 2, 2))[3:5] == bytes([3, 0]), "800k/4M encodes")
+
 print("--- bitrate tables")
 check(tp.can_speed_kbit(250000) == 250 and tp.can_speed_kbit(33333) == 33 and tp.can_speed_kbit(300000) == 0, "can speeds")
 check(tp.fd_speed_code(125000, 6700000) == 1256700 and tp.fd_speed_code(125000, 250000) == 125250, "fd codes 1")

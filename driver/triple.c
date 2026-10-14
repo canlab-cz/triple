@@ -63,6 +63,11 @@ static bool hwtstamp = true;
 module_param(hwtstamp, bool, 0444);
 MODULE_PARM_DESC(hwtstamp, "ask the adapter for 1 us receive timestamps (default on; off raises the sustainable receive rate by about a third)");
 
+static bool fd_bittiming;
+module_param(fd_bittiming, bool, 0444);
+MODULE_PARM_DESC(fd_bittiming, "CAN3: any bitrate and sample point, bit timing computed by the kernel and sent as raw "
+                                "controller timing, instead of the fixed bitrate table (default off)");
+
 /* CAN FD parameters moved into struct can_priv::fd in 6.16 */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
 #define TRIPLE_FD(priv) ((priv)->fd)
@@ -114,6 +119,23 @@ static const u32 triple_fd_nominal_bitrates[] = { 125000, 250000, 500000, 100000
 static const u32 triple_fd_data_bitrates[] = {
   250000, 500000, 833333, 1000000, 1500000, 2000000, 3000000, 4000000, 5000000,
   6700000, 8000000, 10000000,
+};
+
+/* CAN3 controller (MCP2517FD at 40 MHz) limits, for fd_bittiming=1 */
+static const struct can_bittiming_const triple_fd_nominal_const = {
+  .name = "mcp2517fd",
+  .tseg1_min = 2, .tseg1_max = 256,
+  .tseg2_min = 1, .tseg2_max = 128,
+  .sjw_max = 128,
+  .brp_min = 1, .brp_max = 256, .brp_inc = 1,
+};
+
+static const struct can_bittiming_const triple_fd_data_const = {
+  .name = "mcp2517fd",
+  .tseg1_min = 1, .tseg1_max = 32,
+  .tseg2_min = 1, .tseg2_max = 16,
+  .sjw_max = 16,
+  .brp_min = 1, .brp_max = 256, .brp_inc = 1,
 };
 
 /* ------------------------------------------------------------------------
@@ -594,12 +616,53 @@ static void triple_receive_buf(struct tty_struct *tty, const unsigned char *cp, 
  * netdevice side
  */
 
+/* CAN3 with fd_bittiming=1: the bit timing the CAN core computed (or the
+ * user gave in time quanta) as raw controller timing, command 0x89. */
+static int triple_fd_raw_timing_cmd(struct triple_port *port, u8 *cmd, bool listen, int *n)
+{
+  const struct can_bittiming *nb = &port->can.bittiming;
+  const struct can_bittiming *db = &TRIPLE_FD(&port->can).data_bittiming;
+  bool fd = !!(port->can.ctrlmode & CAN_CTRLMODE_FD);
+  bool iso = !(port->can.ctrlmode & CAN_CTRLMODE_FD_NON_ISO);
+  struct triple_fd_bittiming bt;
+  u32 dbrp, dtseg1, dtseg2, dsjw, data;
+
+  if (fd)
+  {
+    dbrp = db->brp;
+    dtseg1 = db->prop_seg + db->phase_seg1;
+    dtseg2 = db->phase_seg2;
+    dsjw = db->sjw;
+    data = db->bitrate;
+  }
+  else
+  {
+    /* the controller always runs CAN FD; give the data phase a rate above
+     * the nominal one so frames with BRS from other nodes still decode */
+    data = triple_fd_default_data_bitrate(nb->bitrate);
+    data = triple_fd_data_timing(data ? data : 2000000, &dbrp, &dtseg1, &dtseg2, &dsjw);
+  }
+  if (!data || triple_fd_bittiming_from_tq(&bt, nb->brp, nb->prop_seg + nb->phase_seg1, nb->phase_seg2, nb->sjw,
+                                           dbrp, dtseg1, dtseg2, dsjw) < 0)
+  {
+    netdev_err(port->dev, "bit timing outside the controller's range\n");
+    return -EINVAL;
+  }
+  *n = triple_encode_bittiming_fd(cmd, &bt, listen, iso, false);
+  netdev_info(port->dev, "%s %u / %u bit/s (raw timing: brp %u tseg1 %u tseg2 %u sjw %u / brp %u tseg1 %u tseg2 %u sjw %u, tdc %s)%s%s\n",
+              fd ? "CAN FD" : "CAN (FD data phase kept for other nodes)",
+              nb->bitrate, data, bt.nbrp + 1, bt.ntseg1 + 1, bt.ntseg2 + 1, bt.nsjw + 1,
+              bt.dbrp + 1, bt.dtseg1 + 1, bt.dtseg2 + 1, bt.dsjw + 1, bt.tdcmod ? "auto" : "off",
+              iso ? "" : ", non-ISO", listen ? ", listen only" : "");
+  return 0;
+}
+
 static int triple_netdev_open(struct net_device *dev)
 {
   struct triple_port *port = netdev_priv(dev);
   struct triple_adapter *a = port->adapter;
   bool listen = !!(port->can.ctrlmode & CAN_CTRLMODE_LISTENONLY);
-  u8 cmd[32];
+  u8 cmd[TRIPLE_MTU];
   int n;
   int err;
 
@@ -621,6 +684,12 @@ static int triple_netdev_open(struct net_device *dev)
     }
     n = triple_encode_settings_can(cmd, port->index + 1, kbit, listen);
     netdev_info(dev, "CAN %u kbit/s%s\n", kbit, listen ? ", listen only" : "");
+  }
+  else if (fd_bittiming)
+  {
+    err = triple_fd_raw_timing_cmd(port, cmd, listen, &n);
+    if (err)
+      goto fail;
   }
   else
   {
@@ -783,6 +852,14 @@ static int triple_ldisc_open(struct tty_struct *tty)
     {
       port->can.bitrate_const = triple_can_bitrates;
       port->can.bitrate_const_cnt = ARRAY_SIZE(triple_can_bitrates);
+    }
+    else if (fd_bittiming)
+    {
+      /* the CAN core takes either fixed bitrates or timing limits, not both */
+      port->can.clock.freq = TRIPLE_FD_CLOCK_HZ;
+      port->can.bittiming_const = &triple_fd_nominal_const;
+      TRIPLE_FD(&port->can).data_bittiming_const = &triple_fd_data_const;
+      port->can.ctrlmode_supported |= CAN_CTRLMODE_FD | CAN_CTRLMODE_FD_NON_ISO;
     }
     else
     {
