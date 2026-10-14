@@ -2,7 +2,7 @@
 
 Status: prepared locally, **not opened**. Branch `usb2can-triple` in the
 WSL checkout `/home/pavel/SavvyCAN`, on top of upstream master `e439670`,
-has two commits:
+has five commits:
 
 | Commit | Content |
 |---|---|
@@ -10,6 +10,7 @@ has two commits:
 | `a85db3c` | Add a Bus Statistics window (generic, works with every connection) |
 | `7997283` | Add a CANopen window (generic: NMT, node monitor, EMCY, SYNC, SDO client) |
 | `ec64818` | Add PP2CAN log files, Data Panel, Response Meter and CAN Calculator |
+| `8bce5f7` | Add PDO decoding to the CANopen window (EDS / DCF or mapping read over SDO) |
 
 They can go in one PR or as separate ones; only the first commit is
 specific to the Triple, the tool windows and the PP2CAN log format work

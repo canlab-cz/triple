@@ -37,7 +37,7 @@ for f in ("triple_serial.h", "triple_serial.cpp"):
 shutil.copy(os.path.join(R, "driver", "include", "triple_proto.h"), os.path.join(S, "connections", "triple_proto.h"))
 shutil.copy(os.path.join(R, "driver", "triple_proto.c"), os.path.join(S, "connections", "triple_proto.c"))
 for f in ("busstatswindow.h", "busstatswindow.cpp", "canopenwindow.h", "canopenwindow.cpp",
-          "savvycompat.h", "canidcalc.h", "cancalcwindow.h", "cancalcwindow.cpp",
+          "savvycompat.h", "canidcalc.h", "canopen_eds.h", "cancalcwindow.h", "cancalcwindow.cpp",
           "responsemeterwindow.h", "responsemeterwindow.cpp", "datapanelwindow.h", "datapanelwindow.cpp"):
     shutil.copy(os.path.join(R, "gui", "savvycan", "re", f), os.path.join(S, "re", f))
 for f in ("pp2canlog.h", "pp2canlog.cpp", "pp2canlogfmt.h"):
@@ -78,6 +78,10 @@ if os.path.exists(os.path.join(S, "CMakeLists.txt")):
           "    re/cancalcwindow.cpp re/cancalcwindow.h\n"
           "    re/responsemeterwindow.cpp re/responsemeterwindow.h\n"
           "    re/datapanelwindow.cpp re/datapanelwindow.h\n")
+    patch("CMakeLists.txt",
+          "    re/datapanelwindow.cpp re/datapanelwindow.h\n",
+          "    re/datapanelwindow.cpp re/datapanelwindow.h\n"
+          "    re/canopen_eds.h\n")
 
 patch("SavvyCAN.pro",
       "    re/temporalgraphwindow.cpp" + BS,
@@ -99,6 +103,10 @@ patch("SavvyCAN.pro",
       "    re/canopenwindow.h" + BS,
       "    re/canopenwindow.h" + BS + "    re/savvycompat.h" + BS + "    re/canidcalc.h" + BS + "    re/cancalcwindow.h" + BS
       + "    re/responsemeterwindow.h" + BS + "    re/datapanelwindow.h" + BS)
+
+patch("SavvyCAN.pro",
+      "    re/datapanelwindow.h" + BS,
+      "    re/datapanelwindow.h" + BS + "    re/canopen_eds.h" + BS)
 
 patch("SavvyCAN.pro",
       "    framefileio.cpp" + BS,

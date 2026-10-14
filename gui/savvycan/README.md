@@ -28,9 +28,14 @@ What the connection provides:
   EMCY messages, NMT commands, SYNC, and an SDO client that reads and
   writes any object (expedited and segmented) and shows abort codes in
   plain text; "Read identity" reads 1000, 1008, 1009, 100A and 1018.
-  Also independent of the Triple connection.
+  The PDOs tab decodes PDOs live: load the node's EDS or DCF file, or
+  read the mapping from the node over SDO, and every mapped object shows
+  its value (by EDS data type), raw bits, frame count and period. Also
+  independent of the Triple connection.
 
 ![CANopen window](../../doc/img/savvycan-canopen.png)
+
+![CANopen PDOs tab](../../doc/img/savvycan-canopen-pdo.png)
 
 * PP2CAN tools:
   * **PP2CAN log files**: File > Load Log File (autodetected) and the
@@ -50,7 +55,8 @@ What the connection provides:
 
 To try it without a CANopen device, run the simulated node from
 `tools/canopen_sim.py` on a Linux SocketCAN interface on the same bus:
-`python3 tools/canopen_sim.py can0 --node 5`.
+`python3 tools/canopen_sim.py can0 --node 5`. Its EDS is
+`tools/canopen_sim.eds`; press Start (NMT) to make it send PDOs.
 
 ## Apply to an upstream checkout
 

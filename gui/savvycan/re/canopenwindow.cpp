@@ -4,6 +4,9 @@
 
 #include <QComboBox>
 #include <QDateTime>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -12,11 +15,14 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
 #include "connections/canconmanager.h"
+#include "savvycompat.h"
 
 namespace {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -87,6 +93,7 @@ CANopenWindow::CANopenWindow(QWidget *parent) : QWidget(parent, Qt::Window)
         int id = nodeTable->item(row, 0)->text().toInt();
         sdoNode->setValue(id);
         nmtNode->setValue(id);
+        pdoNode->setValue(id);
     });
 
     QGroupBox *nodeBox = new QGroupBox(tr("Nodes (from heartbeat, boot-up and EMCY messages)"), this);
@@ -150,18 +157,70 @@ CANopenWindow::CANopenWindow(QWidget *parent) : QWidget(parent, Qt::Window)
     logView->setReadOnly(true);
     logView->setMaximumBlockCount(2000);
 
+    /* --- PDOs ----------------------------------------------------------- */
+    pdoNode = new QSpinBox(this);
+    pdoNode->setRange(1, 127);
+    pdoNode->setToolTip(tr("Node whose PDOs are decoded ($NODEID in the EDS)"));
+    connect(pdoNode, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() {
+        QSettings().setValue("CANopen/pdoNode", pdoNode->value());
+        if (pdosFromNode)                  /* that mapping belongs to the previous node */
+        {
+            pdosFromNode = false;
+            if (!edsLoaded)
+                setPdos({}, tr("- node changed, read the mapping again"));
+        }
+        rebuildPdosFromEds();
+    });
+    QPushButton *edsBtn = new QPushButton(tr("Load EDS/DCF..."), this);
+    QPushButton *mapBtn = new QPushButton(tr("Read mapping from node"), this);
+    mapBtn->setToolTip(tr("Reads the PDO communication and mapping objects (1400..., 1600..., 1800..., 1A00...) over SDO"));
+    connect(edsBtn, &QPushButton::clicked, this, &CANopenWindow::loadEdsClicked);
+    connect(mapBtn, &QPushButton::clicked, this, &CANopenWindow::readMappingClicked);
+    pdoStatus = new QLabel(tr("no PDO mapping: load an EDS/DCF file or read the mapping from the node"), this);
+
+    QHBoxLayout *pdoRow = new QHBoxLayout;
+    pdoRow->addWidget(new QLabel(tr("Node"), this));
+    pdoRow->addWidget(pdoNode);
+    pdoRow->addWidget(edsBtn);
+    pdoRow->addWidget(mapBtn);
+    pdoRow->addWidget(pdoStatus, 1);
+
+    pdoTable = new QTableWidget(0, 9, this);
+    pdoTable->setHorizontalHeaderLabels({ tr("COB-ID"), tr("PDO"), tr("Object"), tr("Bits"), tr("Name"),
+                                          tr("Value"), tr("Raw"), tr("Frames"), tr("Period") });
+    pdoTable->verticalHeader()->setVisible(false);
+    pdoTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    pdoTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    pdoTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+
+    QWidget *pdoPage = new QWidget(this);
+    QVBoxLayout *pdoLayout = new QVBoxLayout(pdoPage);
+    pdoLayout->addLayout(pdoRow);
+    pdoLayout->addWidget(pdoTable);
+
+    QTabWidget *tabs = new QTabWidget(this);
+    tabs->addTab(logView, tr("Log"));
+    tabs->addTab(pdoPage, tr("PDOs"));
+
     QVBoxLayout *layout = new QVBoxLayout(this);
     layout->addLayout(nmtRow);
     layout->addWidget(nodeBox, 2);
     layout->addWidget(sdoBox);
-    layout->addWidget(logView, 2);
+    layout->addWidget(tabs, 3);
 
     connect(CANConManager::getInstance(), &CANConManager::framesReceived, this, &CANopenWindow::framesReceived);
     sdoTimer.setSingleShot(true);
     connect(&sdoTimer, &QTimer::timeout, this, &CANopenWindow::sdoTimeout);
     connect(&refreshTimer, &QTimer::timeout, this, &CANopenWindow::refreshNodes);
     refreshTimer.start(500);
+    connect(&pdoTimer, &QTimer::timeout, this, &CANopenWindow::refreshPdos);
+    pdoTimer.start(200);
     clock.start();
+
+    pdoNode->setValue(QSettings().value("CANopen/pdoNode", 1).toInt());
+    QString lastEds = QSettings().value("CANopen/edsFile").toString();
+    if (!lastEds.isEmpty() && QFileInfo::exists(lastEds))
+        loadEds(lastEds);
 }
 
 int CANopenWindow::currentBus() const
@@ -213,6 +272,18 @@ void CANopenWindow::framesReceived(CANConnection *conn, QVector<CANopenFrame> &f
         if (frameBus(f) != currentBus() || f.hasExtendedFrameFormat() || f.frameType() != DATA_FRAME)
             continue;
         quint32 id = f.frameId();
+        auto pdo = pdoByCob.constFind(id);
+        if (pdo != pdoByCob.constEnd())
+        {
+            PdoLive &l = pdoLive[pdo.value()];
+            qint64 us = guiFrameMicros(f);
+            l.periodUs = l.lastUs >= 0 ? us - l.lastUs : -1;
+            l.lastUs = us;
+            l.data = f.payload();
+            l.count++;
+            l.dirty = true;
+            continue;
+        }
         quint32 fn = id & 0x780;
         int node = id & 0x7F;
         QByteArray d = f.payload();
@@ -495,6 +566,14 @@ void CANopenWindow::sdoTimeout()
 {
     if (!jobActive)
         return;
+    if (job.pdoStep != PDO_NONE)
+    {
+        /* node not answering: drop the rest of the mapping read */
+        for (int i = queue.size() - 1; i >= 0; i--)
+            if (queue[i].pdoStep != PDO_NONE)
+                queue.removeAt(i);
+        mappingTimeout = true;
+    }
     sdoAbort(0x05040000);
     finishJob(tr("timeout, no response"), false);
 }
@@ -505,8 +584,18 @@ void CANopenWindow::finishJob(const QString &result, bool ok)
     QString obj = QString("%1:%2").arg(hex(job.index, 4), hex(job.sub, 2));
     QString line = tr("node %1 %2 %3%4 -> %5").arg(job.node).arg(job.upload ? "read" : "write", obj,
                                                     job.label.isEmpty() ? QString() : " (" + job.label + ")", result);
-    log((ok ? "" : "ERROR ") + line);
-    resultLabel->setText(line);
+    if (job.pdoStep == PDO_NONE)
+    {
+        log((ok ? "" : "ERROR ") + line);
+        resultLabel->setText(line);
+    }
+    else
+    {
+        /* missing PDO objects are normal, log only what was found */
+        if (ok || mappingTimeout)
+            log((ok ? "" : "ERROR ") + line);
+        handlePdoJob(ok);
+    }
     jobActive = false;
     startNextJob();
 }
@@ -637,5 +726,275 @@ QString CANopenWindow::emcyText(quint16 code)
     case 0x9: return "external error";
     case 0xF: return (code >> 8) == 0xFF ? "device specific" : "additional functions";
     default:  return "";
+    }
+}
+
+/* ---------------------------------------------------------------------- PDO */
+
+void CANopenWindow::loadEdsClicked()
+{
+    QSettings settings;
+    QString path = QFileDialog::getOpenFileName(this, tr("Load EDS or DCF file"),
+                                                settings.value("CANopen/edsFile").toString(),
+                                                tr("CANopen device description (*.eds *.dcf *.EDS *.DCF);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    if (loadEds(path))
+        settings.setValue("CANopen/edsFile", path);
+}
+
+bool CANopenWindow::loadEds(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+    {
+        pdoStatus->setText(tr("cannot open %1").arg(path));
+        return false;
+    }
+    canopen::Eds e;
+    e.parse(QString::fromLatin1(f.readAll()).toStdString());
+    if (e.objects.empty())
+    {
+        pdoStatus->setText(tr("%1 has no object dictionary entries").arg(QFileInfo(path).fileName()));
+        return false;
+    }
+    eds = e;
+    edsLoaded = true;
+    edsName = QFileInfo(path).fileName();
+    log(tr("loaded %1 (%2, %3 objects)").arg(edsName, QString::fromStdString(eds.productName))
+            .arg(int(eds.objects.size())));
+    rebuildPdosFromEds();
+    return true;
+}
+
+void CANopenWindow::rebuildPdosFromEds()
+{
+    if (!edsLoaded || mappingRead)
+        return;
+    if (pdosFromNode)
+    {
+        /* keep the mapping read from the node, take names and data types from the EDS */
+        std::vector<canopen::Pdo> list = pdos;
+        for (canopen::Pdo &p : list)
+        {
+            std::vector<uint32_t> mapping;
+            for (const canopen::PdoEntry &e : p.entries)
+                mapping.push_back(uint32_t(e.index) << 16 | uint32_t(e.sub) << 8 | e.bits);
+            p.entries = canopen::mapEntries(mapping, &eds);
+        }
+        setPdos(list, nodeSource + tr(", names from %1").arg(edsName));
+        return;
+    }
+    pdosFromNode = false;
+    setPdos(canopen::buildPdos(eds, pdoNode->value()), tr("from %1").arg(edsName));
+}
+
+void CANopenWindow::readMappingClicked()
+{
+    if (mappingRead)
+        return;
+    pending.clear();
+    mappingRead = true;
+    mappingTimeout = false;
+    int node = pdoNode->value();
+    for (int dir = 0; dir < 2; dir++)
+        for (int n = 1; n <= 8; n++)
+        {
+            SdoJob j;
+            j.node = node;
+            j.index = quint16((dir == 0 ? 0x1800 : 0x1400) + n - 1);
+            j.sub = 1;
+            j.type = T_U32;
+            j.label = QString("%1PDO%2 COB-ID").arg(dir == 0 ? "T" : "R").arg(n);
+            j.pdoStep = PDO_COB;
+            j.pdoTx = dir == 0;
+            j.pdoNum = n;
+            queue.append(j);
+        }
+    pdoStatus->setText(tr("reading the PDO mapping of node %1...").arg(node));
+    startNextJob();
+}
+
+bool CANopenWindow::pdoJobsPending() const
+{
+    for (const SdoJob &j : queue)
+        if (j.pdoStep != PDO_NONE)
+            return true;
+    return false;
+}
+
+void CANopenWindow::handlePdoJob(bool ok)
+{
+    int key = (job.pdoTx ? 0 : 256) + job.pdoNum;
+    QString dir = job.pdoTx ? "T" : "R";
+    quint16 mapIndex = quint16((job.pdoTx ? 0x1A00 : 0x1600) + job.pdoNum - 1);
+
+    if (ok && job.pdoStep == PDO_COB && job.data.size() >= 4)
+    {
+        PendingPdo &p = pending[key];
+        p.haveCob = true;
+        p.cob = le32(job.data, 0);
+        SdoJob j;
+        j.node = job.node;
+        j.index = mapIndex;
+        j.sub = 0;
+        j.type = T_U8;
+        j.label = QString("%1PDO%2 mapped objects").arg(dir).arg(job.pdoNum);
+        j.pdoStep = PDO_COUNT;
+        j.pdoTx = job.pdoTx;
+        j.pdoNum = job.pdoNum;
+        queue.append(j);
+    }
+    else if (ok && job.pdoStep == PDO_COUNT && job.data.size() >= 1)
+    {
+        int count = qMin(64, int(quint8(job.data[0])));
+        pending[key].mapping = QVector<quint32>(count, 0);
+        for (int s = 1; s <= count; s++)
+        {
+            SdoJob j;
+            j.node = job.node;
+            j.index = mapIndex;
+            j.sub = quint8(s);
+            j.type = T_U32;
+            j.label = QString("%1PDO%2 entry %3").arg(dir).arg(job.pdoNum).arg(s);
+            j.pdoStep = PDO_ENTRY;
+            j.pdoTx = job.pdoTx;
+            j.pdoNum = job.pdoNum;
+            queue.append(j);
+        }
+    }
+    else if (ok && job.pdoStep == PDO_ENTRY && job.data.size() >= 4)
+    {
+        PendingPdo &p = pending[key];
+        if (job.sub >= 1 && job.sub <= p.mapping.size())
+            p.mapping[job.sub - 1] = le32(job.data, 0);
+    }
+
+    if (!pdoJobsPending())
+        finishMappingRead();
+}
+
+void CANopenWindow::finishMappingRead()
+{
+    std::vector<canopen::Pdo> list;
+    int tx = 0, rx = 0;
+    for (auto it = pending.constBegin(); it != pending.constEnd(); ++it)
+    {
+        const PendingPdo &pp = it.value();
+        if (!pp.haveCob)
+            continue;
+        canopen::Pdo p;
+        p.tx = it.key() < 256;
+        p.number = it.key() % 256;
+        p.valid = !(pp.cob & 0x80000000u);
+        p.cobId = pp.cob & 0x7FF;
+        std::vector<uint32_t> mapping;
+        for (quint32 m : pp.mapping)
+            if (m)
+                mapping.push_back(m);
+        p.entries = canopen::mapEntries(mapping, edsLoaded ? &eds : nullptr);
+        list.push_back(p);
+        (p.tx ? tx : rx)++;
+    }
+    mappingRead = false;
+    pending.clear();
+    if (mappingTimeout && list.empty())
+    {
+        pdoStatus->setText(tr("node %1 did not answer").arg(pdoNode->value()));
+        return;
+    }
+    QString source = tr("read from node %1: %2 TPDO, %3 RPDO").arg(pdoNode->value()).arg(tx).arg(rx);
+    if (mappingTimeout)
+        source += tr(" (incomplete, node stopped answering)");
+    log(source);
+    pdosFromNode = true;
+    nodeSource = source;
+    setPdos(list, edsLoaded ? source + tr(", names from %1").arg(edsName) : source);
+}
+
+void CANopenWindow::setPdos(const std::vector<canopen::Pdo> &list, const QString &source)
+{
+    pdos = list;
+    pdoLive = QVector<PdoLive>(int(pdos.size()));
+    pdoByCob.clear();
+    pdoTable->clearSpans();
+
+    int rows = 0;
+    for (size_t i = 0; i < pdos.size(); i++)
+    {
+        pdoLive[int(i)].row = rows;
+        rows += qMax(1, int(pdos[i].entries.size()));
+        if (pdos[i].valid && !pdoByCob.contains(pdos[i].cobId))
+            pdoByCob.insert(pdos[i].cobId, int(i));
+    }
+    pdoTable->setRowCount(rows);
+
+    auto cell = [this](int row, int col, const QString &text) {
+        QTableWidgetItem *item = new QTableWidgetItem(text);
+        if (col == 0 || col == 3 || col >= 5)
+            item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        pdoTable->setItem(row, col, item);
+    };
+    int valid = 0;
+    for (size_t i = 0; i < pdos.size(); i++)
+    {
+        const canopen::Pdo &p = pdos[i];
+        int row = pdoLive[int(i)].row;
+        int n = qMax(1, int(p.entries.size()));
+        valid += p.valid ? 1 : 0;
+        for (int r = 0; r < n; r++)
+        {
+            cell(row + r, 0, r ? QString() : "0x" + hex(p.cobId, 3));
+            cell(row + r, 1, r ? QString() : QString("%1PDO%2%3").arg(p.tx ? "T" : "R").arg(p.number)
+                                                   .arg(p.valid ? QString() : tr(" (disabled)")));
+            if (p.entries.empty())
+            {
+                cell(row, 2, "-");
+                cell(row, 3, QString());
+                cell(row, 4, tr("no mapped objects"));
+            }
+            else
+            {
+                const canopen::PdoEntry &e = p.entries[size_t(r)];
+                cell(row + r, 2, QString("%1:%2").arg(hex(e.index, 4), hex(e.sub, 2)));
+                cell(row + r, 3, QString::number(e.bits));
+                cell(row + r, 4, QString::fromStdString(e.name));
+            }
+            for (int c = 5; c < 9; c++)
+                cell(row + r, c, QString());
+        }
+        if (n > 1)
+            for (int c : { 0, 1, 7, 8 })
+                pdoTable->setSpan(row, c, n, 1);
+    }
+    pdoStatus->setText(tr("%1 PDOs (%2 enabled) %3").arg(int(pdos.size())).arg(valid).arg(source));
+}
+
+void CANopenWindow::refreshPdos()
+{
+    for (int i = 0; i < pdoLive.size(); i++)
+    {
+        PdoLive &l = pdoLive[i];
+        if (!l.dirty)
+            continue;
+        l.dirty = false;
+        const canopen::Pdo &p = pdos[size_t(i)];
+        const uint8_t *d = reinterpret_cast<const uint8_t *>(l.data.constData());
+        size_t len = size_t(l.data.size());
+        if (p.entries.empty())
+            pdoTable->item(l.row, 6)->setText(QString(l.data.toHex(' ').toUpper()));
+        for (size_t r = 0; r < p.entries.size(); r++)
+        {
+            const canopen::PdoEntry &e = p.entries[r];
+            uint64_t raw;
+            int row = l.row + int(r);
+            pdoTable->item(row, 5)->setText(QString::fromStdString(canopen::formatEntry(e, d, len)));
+            pdoTable->item(row, 6)->setText(canopen::extract(e, d, len, raw)
+                ? QString::number(qulonglong(raw), 16).toUpper().rightJustified((e.bits + 3) / 4, '0')
+                : tr("short frame (%1 bytes)").arg(int(len)));
+        }
+        pdoTable->item(l.row, 7)->setText(QString::number(l.count));
+        pdoTable->item(l.row, 8)->setText(l.periodUs < 0 ? QString("-")
+                                                          : QString("%1 ms").arg(l.periodUs / 1000.0, 0, 'f', 1));
     }
 }

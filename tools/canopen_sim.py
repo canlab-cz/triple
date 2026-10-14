@@ -15,7 +15,16 @@ Behaviour:
   * abort 0x06020000 for unknown objects, 0x06010002 for read-only ones
   * writing 0xEE to 0x2000 sends an EMCY (0x5000 device hardware),
     writing 0x00 to 0x2000 afterwards sends "error reset"
+  * PDOs while operational, built from the mapping objects (so remapping
+    over SDO changes the frames):
+      TPDO1 0x180+node every 0x1800:5 ms (100): 6000:01 digital inputs (u8),
+            6401:01 analogue input 1 (i16)
+      TPDO2 0x280+node on every SYNC: 6401:02 analogue input 2 (i16),
+            2002:00 SYNC counter (u32)
+      RPDO1 0x200+node: 6200:01 digital outputs (u8)
+  * the matching electronic data sheet is tools/canopen_sim.eds
 """
+import math
 import argparse
 import socket
 import struct
@@ -59,9 +68,45 @@ class Node:
             (0x1018, 4): struct.pack("<I", 2604002),
             (0x2000, 0): b"\x00",
             (0x2001, 0): b"hello",
+            (0x2002, 0): struct.pack("<I", 0),
+            (0x1005, 0): struct.pack("<I", 0x80),
+            # RPDO1
+            (0x1400, 0): b"\x02",
+            (0x1400, 1): struct.pack("<I", 0x200 + self.id),
+            (0x1400, 2): b"\xFF",
+            (0x1600, 0): b"\x01",
+            (0x1600, 1): struct.pack("<I", 0x62000108),
+            # TPDO1: event timer
+            (0x1800, 0): b"\x05",
+            (0x1800, 1): struct.pack("<I", 0x180 + self.id),
+            (0x1800, 2): b"\xFF",
+            (0x1800, 3): struct.pack("<H", 0),
+            (0x1800, 4): b"\x00",
+            (0x1800, 5): struct.pack("<H", 100),
+            (0x1A00, 0): b"\x02",
+            (0x1A00, 1): struct.pack("<I", 0x60000108),
+            (0x1A00, 2): struct.pack("<I", 0x64010110),
+            # TPDO2: every SYNC
+            (0x1801, 0): b"\x02",
+            (0x1801, 1): struct.pack("<I", 0x280 + self.id),
+            (0x1801, 2): b"\x01",
+            (0x1A01, 0): b"\x02",
+            (0x1A01, 1): struct.pack("<I", 0x64010210),
+            (0x1A01, 2): struct.pack("<I", 0x20020020),
+            # process data
+            (0x6000, 0): b"\x01",
+            (0x6000, 1): b"\x00",
+            (0x6200, 0): b"\x01",
+            (0x6200, 1): b"\x00",
+            (0x6401, 0): b"\x02",
+            (0x6401, 1): struct.pack("<h", 0),
+            (0x6401, 2): struct.pack("<h", 0),
         }
         self.ro = {(0x1000, 0), (0x1008, 0), (0x1009, 0), (0x100A, 0), (0x1018, 0),
-                   (0x1018, 1), (0x1018, 2), (0x1018, 3), (0x1018, 4)}
+                   (0x1018, 1), (0x1018, 2), (0x1018, 3), (0x1018, 4), (0x2002, 0),
+                   (0x6000, 0), (0x6000, 1), (0x6200, 0), (0x6401, 0), (0x6401, 1), (0x6401, 2)}
+        self.next_tpdo1 = 0.0
+        self.t0 = time.monotonic()
 
     # -- transport --------------------------------------------------------
     def send(self, can_id, data=b""):
@@ -86,10 +131,35 @@ class Node:
         return ms / 1000.0 if ms else None
 
     def tick(self):
+        now = time.monotonic()
         p = self.hb_period()
-        if p and time.monotonic() >= self.next_hb:
+        if p and now >= self.next_hb:
             self.send(0x700 + self.id, bytes([self.state]))
-            self.next_hb = time.monotonic() + p
+            self.next_hb = now + p
+        # process data: rotating input bit, sine and ramp on the analogue inputs
+        t = now - self.t0
+        self.od[(0x6000, 1)] = bytes([1 << (int(t * 4) % 8)])
+        self.od[(0x6401, 1)] = struct.pack("<h", int(1000 * math.sin(t)))
+        self.od[(0x6401, 2)] = struct.pack("<h", -(int(t * 100) % 2000))
+        period = struct.unpack("<H", self.od[(0x1800, 5)])[0] / 1000.0
+        if self.state == 0x05 and self.od[(0x1800, 2)] == b"\xFF" and period and now >= self.next_tpdo1:
+            self.send_tpdo(0)
+            self.next_tpdo1 = now + period
+
+    def pdo_payload(self, mapping_index):
+        data = b""
+        count = self.od[(mapping_index, 0)][0]
+        for sub in range(1, count + 1):
+            entry = struct.unpack("<I", self.od[(mapping_index, sub)])[0]
+            index, osub, bits = entry >> 16, (entry >> 8) & 0xFF, entry & 0xFF
+            data += self.od.get((index, osub), b"").ljust(bits // 8, b"\x00")[:bits // 8]
+        return data[:8]
+
+    def send_tpdo(self, n):
+        cob = struct.unpack("<I", self.od[(0x1800 + n, 1)])[0]
+        if cob & 0x80000000:
+            return                                   # PDO disabled
+        self.send(cob & 0x7FF, self.pdo_payload(0x1A00 + n))
 
     # -- protocol ---------------------------------------------------------
     def on_frame(self, can_id, data):
@@ -106,6 +176,14 @@ class Node:
             elif cmd == 0x82:
                 print("NMT reset communication")
                 self.bootup()
+        elif can_id == 0x080 and self.state == 0x05:           # SYNC
+            counter = struct.unpack("<I", self.od[(0x2002, 0)])[0] + 1
+            self.od[(0x2002, 0)] = struct.pack("<I", counter)
+            if self.od[(0x1801, 2)] == b"\x01":
+                self.send_tpdo(1)
+        elif can_id == (struct.unpack("<I", self.od[(0x1400, 1)])[0] & 0x7FF) and self.state == 0x05:
+            self.od[(0x6200, 1)] = bytes(data[:1]) if data else b"\x00"   # RPDO1 -> digital outputs
+            print("RPDO1 -> 6200:01 = 0x%02X" % self.od[(0x6200, 1)][0])
         elif can_id == 0x600 + self.id and len(data) == 8:
             if self.state == 0x04:
                 return  # stopped nodes do not answer SDO

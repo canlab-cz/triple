@@ -13,11 +13,15 @@ canidcalc_test: canidcalc_test.cpp $(RE)/canidcalc.h
 pp2canlog_test: pp2canlog_test.cpp $(GUI)/pp2canlogfmt.h
 	$(CXX) $(CXXFLAGS) -I $(GUI) -o $@ pp2canlog_test.cpp
 
-test: canidcalc_test pp2canlog_test
+canopen_eds_test: canopen_eds_test.cpp $(RE)/canopen_eds.h
+	$(CXX) $(CXXFLAGS) -I $(RE) -o $@ canopen_eds_test.cpp
+
+test: canidcalc_test pp2canlog_test canopen_eds_test
 	./canidcalc_test
 	./pp2canlog_test
+	./canopen_eds_test ../../tools/canopen_sim.eds
 
 clean:
-	rm -f canidcalc_test pp2canlog_test
+	rm -f canidcalc_test pp2canlog_test canopen_eds_test
 
 .PHONY: test clean
