@@ -121,8 +121,9 @@ Decision 2026-10-14: build on SavvyCAN (MIT, Qt). First milestone done the same 
 - [ ] usbipd round trips leave an adapter unusable on Windows (open times out) until it is physically replugged; a `pnputil /restart-device` does not help. Worth a note for users who switch adapters between WSL2 and Windows.
 - [x] Error frames in SavvyCAN's frame list: on every bus state change (active, warning at 96, passive at 128, bus off) the connection queues a SocketCAN-layout error frame (controller state in byte 1, TEC/REC in bytes 6/7, `ControllerError` / `BusOffError`). Verified on Windows with a bitrate mismatch on CAN1: passive with REC 128, then active again (`doc/img/savvycan-triple-errorframes.png`).
 - [ ] Marker input and the remaining status fields once the firmware source clarifies them.
-- [ ] Upstream pull request to collin80/SavvyCAN once the Windows build is confirmed.
-- [ ] PP2CAN feature gap review: what SavvyCAN already covers (logs, DBC, graphs, replay, sender, scripting, ISO-TP/UDS) versus what needs adding (CANopen tools, reply maker, gateway, HW sync).
+- [ ] Upstream pull request to collin80/SavvyCAN: prepared locally (branch `usb2can-triple`, commit `a1e748d` in the WSL checkout, text in `gui/savvycan/UPSTREAM_PR.md`). Blocked on a licensing decision: the shared codec is GPL-2.0, SavvyCAN is MIT; proposal is to dual-license `triple_proto.[ch]` as `GPL-2.0 OR MIT`. Opening the PR publishes under the maintainer's GitHub account and is left to them.
+- [x] PP2CAN feature gap review: `doc/pp2can-gap.md` maps every PP2CAN feature to SavvyCAN. Covered: logs, filters, search, continuous logging, periodic sender, playback, gateway (CAN Bridge), graphs, ID / timing analysis, DBC signals, scripting. Missing, ranked: bus statistics window (load %, TEC/REC over time), CANopen basics (NMT, heartbeat, SDO, PDO from EDS), response meter, slider-based data/bit sender, CAN calculator. Blocked on firmware source: HW-timed sync, markers, overflow counter, bus-off encoding.
+- [ ] Next build item: bus statistics window (item 1 of the gap list).
 
 Original design notes:
 

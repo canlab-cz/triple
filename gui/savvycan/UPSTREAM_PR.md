@@ -1,0 +1,69 @@
+# Upstream pull request to collin80/SavvyCAN (draft)
+
+Status: prepared locally, **not opened**. The change is committed on
+branch `usb2can-triple` (commit `a1e748d`) in the WSL checkout
+`/home/pavel/SavvyCAN`, on top of upstream master `e439670`.
+
+## Before opening
+
+1. **License of the codec.** `triple_proto.h` and `triple_proto.c` are
+   marked `SPDX-License-Identifier: GPL-2.0` because they are shared with
+   the Linux kernel module. SavvyCAN is MIT licensed and cannot take a
+   GPL-only file. Proposal: relicense both files as `GPL-2.0 OR MIT`
+   (dual license), which keeps them valid for the kernel module and makes
+   them acceptable upstream. This is CANLAB's decision as copyright
+   holder; after it, update the SPDX lines in `driver/` and re-run
+   `apply.py` so the branch picks them up.
+2. Fork collin80/SavvyCAN on GitHub, push the branch to the fork, open the
+   PR against `master`.
+3. Optionally a second PR against `QT6WIP`: the same files apply there
+   with `apply.py` (CMakeLists entry instead of the .pro file, no
+   connection-window edit).
+
+## Title
+
+Add a connection type for the CANLAB USB2CAN Triple
+
+## Description
+
+The [USB2CAN Triple](https://www.canlab.cz) from CANLAB s.r.o. is a USB
+adapter with three CAN ports: CAN1 and CAN2 classic CAN, CAN3 CAN FD
+(MCP2517FD). It enumerates as a CDC ACM serial port (USB `04d8:f0d7`), so
+this connection drives it through `QSerialPort` on Linux, Windows and
+macOS without a driver.
+
+What the connection does:
+
+- three buses per adapter; bitrate, listen only and (bus 2) CAN FD data
+  rate are set from the connection window
+- receive with the adapter's 1 µs hardware timestamps, mapped onto the
+  connection manager's time base
+- transmit on all buses, CAN FD with BRS on bus 2; frames above the
+  adapter firmware's message size limit are refused with a console
+  message instead of being sent
+- error frames in the frame list on bus state changes (warning, passive,
+  bus off, back to active) from the adapter's status messages, with
+  TEC/REC in bytes 6 and 7
+- Triple ports are listed first in the new connection dialog
+
+Files:
+
+| File | Content |
+|---|---|
+| `connections/triple_serial.h/.cpp` | the `CANConnection` (`CANCon::TRIPLE`) |
+| `connections/triple_proto.h/.c` | adapter wire protocol codec in plain C, shared with the Linux SocketCAN driver; protocol documented in canlab-cz/triple `doc/protocol.md` |
+| `SavvyCAN.pro`, `canconconst.h`, `canconfactory.cpp`, `canconnectionmodel.cpp`, `connectionwindow.cpp`, `newconnectiondialog.*`, `ui/newconnectiondialog.ui` | registration, 54 lines |
+
+Compatibility: the connection compiles on master (Qt 5.15) and on
+`QT6WIP` (Qt 6.8). A small typedef layer covers `CANFrame` versus
+`CommFrame`; on QT6WIP bus 2 is marked with `setCanFDCapable(true)`.
+
+Testing: two adapters wired back to back, one driven by this connection,
+the other by the Linux SocketCAN driver.
+
+| Platform | Result |
+|---|---|
+| Ubuntu 22.04, Qt 5.15, master | receive on all three buses incl. CAN FD, timestamps, transmit from the frame sender |
+| Windows 11, Qt 6.8 MinGW, QT6WIP | receive 14/14 incl. extended IDs and a 12-byte FD frame with BRS; transmit 13/13 at 200 ms; error passive / error active frames on a forced bitrate mismatch |
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
