@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CANLAB s.r.o.
 #include <QDebug>
 #include <QDateTime>
 #include <QSerialPortInfo>

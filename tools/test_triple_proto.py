@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 CANLAB s.r.o.
 """Tests for triple_proto.py: round trips plus the byte sequences captured from
 firmware 1.41 (the same vectors as tests/codec/codec_test.c).
 

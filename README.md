@@ -134,3 +134,15 @@ share a port with the kernel driver. The wire protocol is documented in
 
 Driver v1.x (tty line discipline plus the `tripled` daemon, kernels up to
 5.15) lives in the git history before tag `v2.0`.
+
+## License
+
+Each source file states its license in an `SPDX-License-Identifier` line.
+
+| Part | License |
+|---|---|
+| Kernel module `driver/triple.c` | GPL-2.0 (required for a Linux kernel module) |
+| Protocol codec `driver/triple_proto.[ch]`, SavvyCAN connection `gui/savvycan/`, Python tools `tools/`, tests | MIT |
+
+MIT is compatible with the GPL, so the module as a whole is GPL-2.0 while
+the codec can also be used in MIT projects such as SavvyCAN.

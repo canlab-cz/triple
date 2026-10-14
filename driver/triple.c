@@ -13,6 +13,8 @@
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2.
+ * The protocol codec it links (triple_proto.c) is MIT licensed, which is
+ * compatible; the module as a whole is GPL-2.0.
  */
 #include <linux/module.h>
 #include <linux/version.h>

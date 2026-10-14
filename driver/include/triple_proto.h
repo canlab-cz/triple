@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: MIT */
+/* Copyright (c) 2026 CANLAB s.r.o. */
 /*
  * USB2CAN Triple (CANLAB) wire protocol: constants, frame codec and
  * command encoders. Kernel and host builds (tests/codec) share this file.

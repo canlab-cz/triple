@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CANLAB s.r.o.
 /* Host-side test of the USB2CAN Triple wire codec.
  *
  * Besides encode -> decode round trips it checks the codec against byte

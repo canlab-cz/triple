@@ -179,6 +179,1246 @@ index 387a4fb..1053355 100644
      bool isSerialBusAvailable();
      void setPortName(CANCon::type pType, QString pPortName, QString pDriver);
  };
+diff --git a/connections/triple_proto.c b/connections/triple_proto.c
+new file mode 100755
+index 0000000..68612c1
+--- /dev/null
++++ b/connections/triple_proto.c
+@@ -0,0 +1,343 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++/*
++ * USB2CAN Triple wire protocol codec. No kernel dependencies beyond
++ * string.h so that tests/codec can compile it on the host.
++ */
++#include "triple_proto.h"
++
++size_t triple_unescape(u8 *dest, const u8 *src, size_t n)
++{
++  size_t i;
++  size_t out = 0;
++  bool esc = false;
++
++  for (i = 0; i < n; i++)
++  {
++    /* start byte and raw length byte are never escaped */
++    if (i < 2)
++    {
++      dest[out++] = src[i];
++      continue;
++    }
++    if (src[i] == TRIPLE_ESC_BYTE && !esc)
++    {
++      esc = true;
++      continue;
++    }
++    dest[out++] = src[i];
++    esc = false;
++  }
++  return out;
++}
++
++u8 triple_dlc2len(u8 dlc)
++{
++  static const u8 table[16] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64 };
++
++  return table[dlc & TRIPLE_FLAG_DLC];
++}
++
++u8 triple_len2dlc(u8 len)
++{
++  if (len <= 8)
++    return len;
++  if (len <= 12)
++    return 9;
++  if (len <= 16)
++    return 10;
++  if (len <= 20)
++    return 11;
++  if (len <= 24)
++    return 12;
++  if (len <= 32)
++    return 13;
++  if (len <= 48)
++    return 14;
++  return 15;
++}
++
++/* ---- generic message builder ----------------------------------------- */
++
++static int triple_build(u8 *out, u8 cmd, const u8 *payload, int n)
++{
++  int len = 0;
++  int i;
++
++  out[len++] = TRIPLE_FIRST_BYTE;
++  out[len++] = 0; /* patched below */
++  len += triple_put(out + len, cmd);
++  for (i = 0; i < n; i++)
++    len += triple_put(out + len, payload[i]);
++  out[len++] = TRIPLE_LAST_BYTE;
++  out[1] = (u8)len; /* raw, see header */
++  return len;
++}
++
++/* ---- frame codec ------------------------------------------------------ */
++
++int triple_encode_frame(const struct triple_frame *f, u8 *out, size_t outsz)
++{
++  u8 tmp[TRIPLE_MTU];
++  u8 flags;
++  int n = 0;
++  int i;
++
++  if (f->port >= TRIPLE_PORTS || f->len > TRIPLE_MAX_DATA || (!f->fd && f->len > 8))
++    return -1;
++
++  tmp[n++] = TRIPLE_FIRST_BYTE;
++  tmp[n++] = 0;
++  n += triple_put(tmp + n, TRIPLE_CMD_TX_CAN_1 + f->port);
++
++  for (i = 0; i < TRIPLE_ID_LEN; i++)
++    n += triple_put(tmp + n, (u8)(f->id >> (8 * (TRIPLE_ID_LEN - 1 - i))));
++
++  flags = triple_len2dlc(f->len);
++  if (f->eff)
++    flags |= TRIPLE_FLAG_EFF;
++  if (f->rtr)
++    flags |= TRIPLE_FLAG_RTR;
++  if (f->fd)
++  {
++    flags |= TRIPLE_FLAG_FD;
++    if (f->brs)
++      flags |= TRIPLE_FLAG_BRS;
++  }
++  n += triple_put(tmp + n, flags);
++
++  if (!f->rtr)
++    for (i = 0; i < f->len; i++)
++      n += triple_put(tmp + n, f->data[i]);
++
++  tmp[n++] = TRIPLE_LAST_BYTE;
++  tmp[1] = (u8)n;
++
++  if ((size_t)n > outsz)
++    return -1;
++  memcpy(out, tmp, n);
++  return n;
++}
++
++static u32 get_be32(const u8 *p)
++{
++  return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
++}
++
++int triple_decode(const u8 *wire, size_t n, struct triple_msg *m)
++{
++  u8 buf[TRIPLE_MTU];
++  struct triple_frame *f = &m->frame;
++  const u8 *p;
++  size_t len;
++  size_t avail;
++  size_t need;
++  u8 cmd;
++  u8 flags;
++  int idx;
++
++  if (n < 4 || n > TRIPLE_MTU || wire[0] != TRIPLE_FIRST_BYTE || wire[n - 1] != TRIPLE_LAST_BYTE)
++    return -1;
++
++  len = triple_unescape(buf, wire, n);
++  memset(m, 0, sizeof(*m));
++
++  cmd = buf[2];
++  p = buf + 3;
++  avail = len - 4; /* payload bytes between the command and the end byte */
++
++  switch (cmd)
++  {
++  case TRIPLE_CMD_STATUS:
++    if (avail < TRIPLE_STATUS_LEN)
++      return -3;
++    m->type = TRIPLE_MSG_STATUS;
++    memcpy(m->status.raw, p, TRIPLE_STATUS_LEN);
++    /* mapping verified by forcing errors per port, see doc/PLAN.md */
++    m->status.port[0].tec = p[1];
++    m->status.port[0].rec = p[2];
++    m->status.port[1].tec = p[3];
++    m->status.port[1].rec = p[4];
++    m->status.port[2].tec = p[5];
++    m->status.port[2].rec = p[6];
++    m->status.port[0].state = p[29];
++    m->status.port[1].state = p[30];
++    m->status.port[2].state = p[31];
++    return m->type;
++
++  case TRIPLE_CMD_FW_VER:
++    m->type = TRIPLE_MSG_FW_VER;
++    if (avail > sizeof(m->fw_version) - 1)
++      avail = sizeof(m->fw_version) - 1;
++    memcpy(m->fw_version, p, avail);
++    m->fw_version[avail] = 0;
++    return m->type;
++
++  case TRIPLE_CMD_RX_CAN_1:
++  case TRIPLE_CMD_RX_CAN_2:
++  case TRIPLE_CMD_RX_CAN_3:
++  case TRIPLE_CMD_RX_CAN_3_ESI:
++    idx = cmd - TRIPLE_CMD_RX_CAN_1;
++    f->has_ts = false;
++    break;
++
++  case TRIPLE_CMD_RX_TS_CAN_1:
++  case TRIPLE_CMD_RX_TS_CAN_2:
++  case TRIPLE_CMD_RX_TS_CAN_3:
++  case TRIPLE_CMD_RX_TS_CAN_3_ESI:
++    idx = cmd - TRIPLE_CMD_RX_TS_CAN_1;
++    f->has_ts = true;
++    break;
++
++  default:
++    return -2;
++  }
++
++  m->type = TRIPLE_MSG_FRAME;
++  f->port = idx < 3 ? idx : 2;
++  f->esi = idx == 3;
++
++  need = TRIPLE_ID_LEN + 1 + (f->has_ts ? TRIPLE_TS_LEN : 0);
++  if (avail < need)
++    return -3;
++
++  f->id = get_be32(p);
++  flags = p[TRIPLE_ID_LEN];
++  p += TRIPLE_ID_LEN + 1;
++  if (f->has_ts)
++  {
++    f->ts = get_be32(p);
++    p += TRIPLE_TS_LEN;
++  }
++
++  f->eff = !!(flags & TRIPLE_FLAG_EFF);
++  f->rtr = !!(flags & TRIPLE_FLAG_RTR);
++  f->fd = !!(flags & TRIPLE_FLAG_FD);
++  f->brs = f->fd && !!(flags & TRIPLE_FLAG_BRS);
++  f->len = triple_dlc2len(flags & TRIPLE_FLAG_DLC);
++
++  if (!f->fd && f->len > 8)
++    return -4;
++
++  if (!f->rtr)
++  {
++    if (avail - need < f->len)
++      return -5;
++    memcpy(f->data, p, f->len);
++  }
++  return m->type;
++}
++
++/* ---- commands --------------------------------------------------------- */
++
++int triple_encode_settings_can(u8 *out, u8 port, u16 kbit, bool listen_only)
++{
++  u8 payload[4] = { port, (u8)(kbit >> 8), (u8)kbit, listen_only ? 1 : 0 };
++
++  return triple_build(out, TRIPLE_CMD_SETTINGS, payload, sizeof(payload));
++}
++
++int triple_encode_settings_fd(u8 *out, u32 code, bool listen_only, bool iso, bool esi)
++{
++  u8 payload[8] = { 3, (u8)(code >> 24), (u8)(code >> 16), (u8)(code >> 8), (u8)code,
++                    listen_only ? 1 : 0, iso ? 1 : 0, esi ? 1 : 0 };
++
++  return triple_build(out, TRIPLE_CMD_SETTINGS, payload, sizeof(payload));
++}
++
++int triple_encode_bittiming_fd(u8 *out, const struct triple_fd_bittiming *bt, bool listen_only, bool iso, bool esi)
++{
++  const u16 v[11] = { bt->nbrp, bt->ntseg1, bt->ntseg2, bt->nsjw, bt->dbrp, bt->dtseg1, bt->dtseg2, bt->dsjw,
++                      bt->tdco, bt->tdcv, bt->tdcmod };
++  u8 payload[1 + 22 + 3];
++  int i;
++
++  payload[0] = 3;
++  for (i = 0; i < 11; i++)
++  {
++    payload[1 + 2 * i] = (u8)(v[i] >> 8);
++    payload[2 + 2 * i] = (u8)v[i];
++  }
++  payload[23] = listen_only ? 1 : 0;
++  payload[24] = iso ? 1 : 0;
++  payload[25] = esi ? 1 : 0;
++  return triple_build(out, TRIPLE_CMD_BITTIMING, payload, sizeof(payload));
++}
++
++int triple_encode_timestamp_mode(u8 *out, bool on)
++{
++  u8 payload[1] = { on ? 1 : 0 };
++
++  return triple_build(out, TRIPLE_CMD_TIMESTAMP, payload, sizeof(payload));
++}
++
++int triple_encode_buffer_mode(u8 *out, u32 mode)
++{
++  u8 payload[4] = { (u8)(mode >> 24), (u8)(mode >> 16), (u8)(mode >> 8), (u8)mode };
++
++  return triple_build(out, TRIPLE_CMD_BUFFER_MODE, payload, sizeof(payload));
++}
++
++int triple_encode_fw_version_req(u8 *out)
++{
++  return triple_build(out, TRIPLE_CMD_FW_VER, NULL, 0);
++}
++
++/* ---- bitrate tables --------------------------------------------------- */
++
++static const struct { u32 bitrate; u16 kbit; } can_speeds[] = {
++  { 10000, 10 }, { 20000, 20 }, { 33333, 33 }, { 50000, 50 }, { 62500, 62 },
++  { 83333, 83 }, { 100000, 100 }, { 125000, 125 }, { 250000, 250 },
++  { 500000, 500 }, { 1000000, 1000 },
++};
++
++u16 triple_can_speed_kbit(u32 bitrate)
++{
++  size_t i;
++
++  for (i = 0; i < sizeof(can_speeds) / sizeof(can_speeds[0]); i++)
++    if (can_speeds[i].bitrate == bitrate)
++      return can_speeds[i].kbit;
++  return 0;
++}
++
++static const u32 fd_nominal[] = { 125000, 250000, 500000, 1000000 };
++
++static const struct { u32 bitrate; u16 code; } fd_data[] = {
++  { 250000, 250 }, { 500000, 500 }, { 833333, 833 }, { 1000000, 1000 },
++  { 1500000, 1500 }, { 2000000, 2000 }, { 3000000, 3000 }, { 4000000, 4000 },
++  { 5000000, 5000 }, { 6700000, 6700 }, { 8000000, 8000 }, { 10000000, 9999 },
++};
++
++/* Firmware codes concatenate the two kbit values: 125k/250k -> 125250,
++ * 125k/1M -> 1251000, 1M/1.5M -> 10001500, 10M is written as 9999. */
++u32 triple_fd_speed_code(u32 nominal, u32 data)
++{
++  size_t i;
++  u32 nom_k = 0;
++  u16 data_code = 0;
++
++  for (i = 0; i < sizeof(fd_nominal) / sizeof(fd_nominal[0]); i++)
++    if (fd_nominal[i] == nominal)
++      nom_k = nominal / 1000;
++  for (i = 0; i < sizeof(fd_data) / sizeof(fd_data[0]); i++)
++    if (fd_data[i].bitrate == data)
++      data_code = fd_data[i].code;
++
++  if (!nom_k || !data_code || data <= nominal)
++    return 0;
++
++  if (data_code >= 1000)
++    return nom_k * 10000 + data_code;
++  return nom_k * 1000 + data_code;
++}
++
++u32 triple_fd_default_data_bitrate(u32 nominal)
++{
++  size_t i;
++
++  for (i = 0; i < sizeof(fd_data) / sizeof(fd_data[0]); i++)
++    if (fd_data[i].bitrate > nominal)
++      return fd_data[i].bitrate;
++  return 0;
++}
+diff --git a/connections/triple_proto.h b/connections/triple_proto.h
+new file mode 100755
+index 0000000..36c6e07
+--- /dev/null
++++ b/connections/triple_proto.h
+@@ -0,0 +1,206 @@
++/* SPDX-License-Identifier: MIT */
++/* Copyright (c) 2026 CANLAB s.r.o. */
++/*
++ * USB2CAN Triple (CANLAB) wire protocol: constants, frame codec and
++ * command encoders. Kernel and host builds (tests/codec) share this file.
++ *
++ * Wire format, every message:
++ *   [0]    0x0F                  start byte
++ *   [1]    length                total bytes on the wire, escapes included,
++ *                                written RAW (never escaped)
++ *   [2]    command
++ *   [3..]  payload               bytes 0x0F / 0x1F / 0xEF are prefixed by 0x1F
++ *   [last] 0xEF                  end byte
++ *
++ * CAN frame payload (commands 0xA0..0xA3 / 0xB0..0xB3):
++ *   id[4] big endian, flags, [ts[4] big endian, 1 us ticks], data[]
++ *   flags: 0x80 extended id, 0x40 RTR, 0x20 CAN FD, 0x10 bit rate switch,
++ *          0x0F DLC code (CAN FD encoding)
++ *
++ * All of the above was verified against firmware 1.41 on 2026-10-14,
++ * see doc/PLAN.md.
++ */
++#ifndef TRIPLE_PROTO_H
++#define TRIPLE_PROTO_H
++
++#ifdef __KERNEL__
++#include <linux/types.h>
++#include <linux/string.h>
++#else
++#include <stdint.h>
++#include <stdbool.h>
++#include <string.h>
++#include <stddef.h>
++typedef uint8_t u8;
++typedef uint16_t u16;
++typedef uint32_t u32;
++#endif
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define TRIPLE_FIRST_BYTE   0x0F
++#define TRIPLE_LAST_BYTE    0xEF
++#define TRIPLE_ESC_BYTE     0x1F
++
++/* host -> adapter */
++#define TRIPLE_CMD_TX_CAN_1       0xA0
++#define TRIPLE_CMD_TX_CAN_2       0xA1
++#define TRIPLE_CMD_TX_CAN_3       0xA2
++#define TRIPLE_CMD_SETTINGS       0x88  /* bitrate / mode per port */
++#define TRIPLE_CMD_BITTIMING      0x89  /* raw MCP2517FD bit timing, port 3 */
++#define TRIPLE_CMD_TIMESTAMP      0x8B  /* 1 byte: 0 off, 1 on */
++#define TRIPLE_CMD_BUFFER_MODE    0x8D  /* u32 big endian, 1 */
++#define TRIPLE_CMD_FW_VER         0x90  /* no payload, reply has the same command */
++
++/* adapter -> host */
++#define TRIPLE_CMD_RX_CAN_1       0xA0  /* no timestamp */
++#define TRIPLE_CMD_RX_CAN_2       0xA1
++#define TRIPLE_CMD_RX_CAN_3       0xA2
++#define TRIPLE_CMD_RX_CAN_3_ESI   0xA3
++#define TRIPLE_CMD_RX_TS_CAN_1    0xB0  /* with timestamp */
++#define TRIPLE_CMD_RX_TS_CAN_2    0xB1
++#define TRIPLE_CMD_RX_TS_CAN_3    0xB2
++#define TRIPLE_CMD_RX_TS_CAN_3_ESI 0xB3
++#define TRIPLE_CMD_STATUS         0x8A  /* every 250 ms, 38 payload bytes */
++#define TRIPLE_CMD_MARKER         0x87  /* trigger input, not decoded */
++
++#define TRIPLE_FLAG_EFF   0x80
++#define TRIPLE_FLAG_RTR   0x40
++#define TRIPLE_FLAG_FD    0x20
++#define TRIPLE_FLAG_BRS   0x10
++#define TRIPLE_FLAG_DLC   0x0F
++
++#define TRIPLE_ID_LEN     4
++#define TRIPLE_TS_LEN     4
++#define TRIPLE_MAX_DATA   64
++#define TRIPLE_PORTS      3
++
++/* Longest message either side can produce: 1 + 1 + 2 + 8 + 2 + 8 + 128 + 1 */
++#define TRIPLE_MTU        160
++
++/* Largest message the firmware is known to accept from the host. 137 bytes
++ * locked the adapter up until power cycle; 100 is the largest verified. */
++#define TRIPLE_FW_MAX_WIRE_LEN 100
++
++#define TRIPLE_STATUS_LEN 38
++
++enum triple_msg_type {
++  TRIPLE_MSG_FRAME = 1,
++  TRIPLE_MSG_STATUS,
++  TRIPLE_MSG_FW_VER,
++};
++
++struct triple_frame {
++  u8   port;              /* 0..2 */
++  bool eff;
++  bool rtr;
++  bool fd;
++  bool brs;
++  bool esi;
++  bool has_ts;
++  u32  id;                /* without flags */
++  u32  ts;                /* adapter microseconds, 32 bit, wraps */
++  u8   len;               /* data length in bytes */
++  u8   data[TRIPLE_MAX_DATA];
++};
++
++/* Error counters per port as reported by the status message. Port 3 has a
++ * wider block in the firmware status; only its first two bytes are mapped. */
++struct triple_port_status {
++  u8 tec;
++  u8 rec;
++  u8 state;               /* 0 active, 1 passive seen; others unknown */
++};
++
++struct triple_status {
++  struct triple_port_status port[TRIPLE_PORTS];
++  u8 raw[TRIPLE_STATUS_LEN];
++};
++
++struct triple_msg {
++  enum triple_msg_type type;
++  struct triple_frame frame;      /* TRIPLE_MSG_FRAME */
++  struct triple_status status;    /* TRIPLE_MSG_STATUS */
++  char fw_version[16];            /* TRIPLE_MSG_FW_VER, NUL terminated */
++};
++
++/* ---- escaping -------------------------------------------------------- */
++
++static inline bool triple_needs_escape(u8 b)
++{
++  return b == TRIPLE_FIRST_BYTE || b == TRIPLE_LAST_BYTE || b == TRIPLE_ESC_BYTE;
++}
++
++/* Append one payload byte, escaped if needed. Returns bytes written (1 or 2). */
++static inline int triple_put(u8 *out, u8 b)
++{
++  if (triple_needs_escape(b))
++  {
++    out[0] = TRIPLE_ESC_BYTE;
++    out[1] = b;
++    return 2;
++  }
++  out[0] = b;
++  return 1;
++}
++
++/* Unescape a complete wire message of n bytes into dest (same size is
++ * enough). Bytes 0 and 1 are copied raw. Returns the unescaped length. */
++size_t triple_unescape(u8 *dest, const u8 *src, size_t n);
++
++/* ---- frame codec ----------------------------------------------------- */
++
++/* Encode a CAN frame for transmission. Returns the wire length, or a
++ * negative value if the frame does not fit into out (outsz bytes). */
++int triple_encode_frame(const struct triple_frame *f, u8 *out, size_t outsz);
++
++/* Decode a complete, still escaped wire message. Returns the message type
++ * (> 0), or a negative value for malformed or unsupported messages. */
++int triple_decode(const u8 *wire, size_t n, struct triple_msg *m);
++
++/* ---- command encoders (return wire length) --------------------------- */
++
++/* Ports 1 and 2: bitrate in kbit/s as the firmware code (see
++ * triple_can_speed_kbit), listen-only flag. port is 1 or 2. */
++int triple_encode_settings_can(u8 *out, u8 port, u16 kbit, bool listen_only);
++
++/* Port 3 (CAN FD): combined speed code (see triple_fd_speed_code). */
++int triple_encode_settings_fd(u8 *out, u32 code, bool listen_only, bool iso, bool esi);
++
++/* Port 3 raw MCP2517FD bit timing (TRIPLE_CMD_BITTIMING). Layout taken
++ * from the v1.x daemon, not yet exercised against firmware. */
++struct triple_fd_bittiming {
++  u16 nbrp, ntseg1, ntseg2, nsjw;     /* nominal */
++  u16 dbrp, dtseg1, dtseg2, dsjw;     /* data */
++  u16 tdco, tdcv, tdcmod;             /* transmitter delay compensation, tdcmod 0 off 1 manual 2 auto */
++};
++int triple_encode_bittiming_fd(u8 *out, const struct triple_fd_bittiming *bt, bool listen_only, bool iso, bool esi);
++
++int triple_encode_timestamp_mode(u8 *out, bool on);
++int triple_encode_buffer_mode(u8 *out, u32 mode);
++int triple_encode_fw_version_req(u8 *out);
++
++/* ---- bitrate tables -------------------------------------------------- */
++
++/* Firmware kbit code for a CAN 2.0 bitrate in bit/s, or 0 if unsupported. */
++u16 triple_can_speed_kbit(u32 bitrate);
++
++/* Firmware speed code for a CAN FD nominal/data bitrate pair in bit/s,
++ * or 0 if the combination is not supported. */
++u32 triple_fd_speed_code(u32 nominal, u32 data);
++
++/* Default data bitrate to use with a nominal bitrate when the user did not
++ * ask for CAN FD (the port always runs in FD mode in the firmware). */
++u32 triple_fd_default_data_bitrate(u32 nominal);
++
++/* DLC code <-> length */
++u8 triple_dlc2len(u8 dlc);
++u8 triple_len2dlc(u8 len);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* TRIPLE_PROTO_H */
+diff --git a/connections/triple_serial.cpp b/connections/triple_serial.cpp
+new file mode 100755
+index 0000000..aa839bd
+--- /dev/null
++++ b/connections/triple_serial.cpp
+@@ -0,0 +1,576 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#include <QDebug>
++#include <QDateTime>
++#include <QSerialPortInfo>
++#include <QStringBuilder>
++#include <QMetaMethod>
++
++#include "triple_serial.h"
++#include "canconmanager.h"
++#include "utility.h"
++
++/* SavvyCAN's data rate combo offers 1M, 2M, 4M, 5M; the adapter also does
++ * 250k .. 10M. Anything not in the firmware table is mapped to the next
++ * supported value above it. */
++static uint32_t nearestSupportedDataRate(uint32_t nominal, uint32_t wanted)
++{
++    static const uint32_t rates[] = { 250000, 500000, 833333, 1000000, 1500000, 2000000, 3000000,
++                                      4000000, 5000000, 6700000, 8000000, 10000000 };
++    for (uint32_t r : rates)
++        if (r >= wanted && r > nominal)
++            return r;
++    return 10000000;
++}
++
++TripleSerial::TripleSerial(QString portName) :
++    CANConnection(portName, "USB2CAN Triple", CANCon::TRIPLE, 115200, 0, false, 0, TRIPLE_PORTS, 4000, true)
++{
++    serial = nullptr;
++    rxCount = 0;
++    rxEscaped = false;
++    rxResync = false;
++    tsBaseMicros = 0;
++    tsLast = 0;
++    tsWrapAdd = 0;
++    tsHaveBase = false;
++    for (int i = 0; i < TRIPLE_PORTS; i++)
++    {
++        lastTec[i] = lastRec[i] = lastState[i] = 0;
++        busState[i] = 0;
++    }
++
++    /* defaults matching the Linux driver's README: 250k, 500k, FD 125k / 6.7M */
++    CANBus bus;
++    bus.setActive(true);
++    bus.setListenOnly(false);
++    bus.setSpeed(250000);
++    setBusConfig(0, bus);
++    bus.setSpeed(500000);
++    setBusConfig(1, bus);
++    bus.setSpeed(125000);
++    bus.setCanFD(true);
++    bus.setDataRate(6700000);
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++    bus.setCanFDCapable(true); /* QT6WIP: makes the connection window show the FD controls for this bus */
++#endif
++    setBusConfig(2, bus);
++
++    sendDebug("TripleSerial()");
++}
++
++TripleSerial::~TripleSerial()
++{
++    stop();
++    sendDebug("~TripleSerial()");
++}
++
++/* hex dumps are only built when the connection window's console listens */
++bool TripleSerial::consoleWanted()
++{
++    static const QMetaMethod sig = QMetaMethod::fromSignal(&CANConnection::debugOutput);
++    return isSignalConnected(sig);
++}
++
++void TripleSerial::sendDebug(const QString &text)
++{
++    /* qInfo: SavvyCAN release builds compile qDebug out (QT_NO_DEBUG_OUTPUT) */
++    qInfo() << text;
++    emit debugOutput(text);
++}
++
++void TripleSerial::sendToSerial(const QByteArray &bytes)
++{
++    if (!serial || !serial->isOpen())
++    {
++        sendDebug("Triple: write attempted while the serial port is not open");
++        return;
++    }
++    if (consoleWanted())
++    {
++        QString s = "Triple TX ->";
++        for (unsigned char b : bytes)
++            s = s % " " % QString::number(b, 16).rightJustified(2, '0');
++        sendDebug(s);
++    }
++    serial->write(bytes);
++}
++
++/* ---------------------------------------------------------------- lifecycle */
++
++void TripleSerial::piStarted()
++{
++    connectDevice();
++}
++
++void TripleSerial::piStop()
++{
++    disconnectDevice();
++}
++
++void TripleSerial::piSuspend(bool pSuspend)
++{
++    setCapSuspended(pSuspend);
++    if (isCapSuspended())
++        getQueue().flush();
++}
++
++void TripleSerial::connectDevice()
++{
++    if (serial)
++        disconnectDevice();
++
++    serial = new QSerialPort(QSerialPortInfo(getPort()));
++
++    /* CDC ACM: the line settings are irrelevant, but QSerialPort wants them */
++    serial->setBaudRate(115200);
++    serial->setDataBits(QSerialPort::Data8);
++    serial->setParity(QSerialPort::NoParity);
++    serial->setStopBits(QSerialPort::OneStop);
++    serial->setFlowControl(QSerialPort::NoFlowControl);
++
++    /* The error signal is connected only after a successful open: open()
++     * emits it synchronously, and serialError() would delete the port
++     * while we are still using it here. */
++    if (!serial->open(QIODevice::ReadWrite))
++    {
++        QString why = serial->errorString();
++        sendDebug("Triple: cannot open " + getPort() + ": " + why);
++        disconnectDevice();
++        return;
++    }
++    connect(serial, SIGNAL(readyRead()), this, SLOT(readSerialData()));
++    connect(serial, SIGNAL(errorOccurred(QSerialPort::SerialPortError)), this, SLOT(serialError(QSerialPort::SerialPortError)));
++    serial->setDataTerminalReady(true);
++
++    rxCount = 0;
++    rxEscaped = false;
++    rxResync = false;
++    tsHaveBase = false;
++    tsWrapAdd = 0;
++    tsLast = 0;
++    fwVersion.clear();
++
++    uint8_t cmd[64];
++    int n;
++    n = triple_encode_buffer_mode(cmd, 1);
++    sendToSerial(QByteArray((const char *)cmd, n));
++    n = triple_encode_timestamp_mode(cmd, true);
++    sendToSerial(QByteArray((const char *)cmd, n));
++    for (int i = 0; i < TRIPLE_PORTS; i++)
++        sendBusSettings(i);
++    n = triple_encode_fw_version_req(cmd);
++    sendToSerial(QByteArray((const char *)cmd, n));
++
++    setStatus(CANCon::CONNECTED);
++    CANConStatus stats;
++    stats.conStatus = getStatus();
++    stats.numHardwareBuses = TRIPLE_PORTS;
++    emit status(stats);
++
++    sendDebug("Triple: connected on " + getPort());
++}
++
++void TripleSerial::disconnectDevice()
++{
++    if (serial)
++    {
++        if (serial->isOpen())
++            serial->close();
++        serial->disconnect();
++        delete serial;
++        serial = nullptr;
++    }
++
++    setStatus(CANCon::NOT_CONNECTED);
++    CANConStatus stats;
++    stats.conStatus = getStatus();
++    stats.numHardwareBuses = TRIPLE_PORTS;
++    emit status(stats);
++}
++
++void TripleSerial::serialError(QSerialPort::SerialPortError err)
++{
++    if (err == QSerialPort::NoError)
++        return;
++    QString why = serial ? serial->errorString() : QString("port already closed");
++    sendDebug("Triple: serial error " + QString::number(err) + ": " + why);
++    switch (err)
++    {
++    case QSerialPort::DeviceNotFoundError:
++    case QSerialPort::PermissionError:
++    case QSerialPort::OpenError:
++    case QSerialPort::ResourceError:
++    case QSerialPort::NotOpenError:
++    case QSerialPort::UnknownError:
++        piStop();
++        break;
++    default:
++        break;
++    }
++}
++
++/* ------------------------------------------------------------- bus settings */
++
++bool TripleSerial::piGetBusSettings(int pBusIdx, CANBus& pBus)
++{
++    return getBusConfig(pBusIdx, pBus);
++}
++
++void TripleSerial::piSetBusSettings(int pBusIdx, CANBus bus)
++{
++    if (pBusIdx < 0 || pBusIdx >= TRIPLE_PORTS)
++        return;
++    setBusConfig(pBusIdx, bus);
++    if (serial && serial->isOpen())
++        sendBusSettings(pBusIdx);
++}
++
++void TripleSerial::sendBusSettings(int busIdx)
++{
++    CANBus bus;
++    if (!getBusConfig(busIdx, bus))
++        return;
++
++    /* an inactive bus is kept silent by switching it to listen only */
++    bool listen = bus.isListenOnly() || !bus.isActive();
++    uint8_t cmd[64];
++    int n;
++
++    if (busIdx < 2)
++    {
++        uint16_t kbit = triple_can_speed_kbit(bus.getSpeed());
++        if (!kbit)
++        {
++            sendDebug("Triple: unsupported bitrate " + QString::number(bus.getSpeed()) + " on CAN" + QString::number(busIdx + 1));
++            return;
++        }
++        n = triple_encode_settings_can(cmd, busIdx + 1, kbit, listen);
++        sendDebug("Triple: CAN" + QString::number(busIdx + 1) + " " + QString::number(kbit) + " kbit/s" + (listen ? " listen only" : ""));
++    }
++    else
++    {
++        uint32_t nominal = bus.getSpeed();
++        uint32_t data = bus.isCanFD() ? nearestSupportedDataRate(nominal, bus.getDataRate()) : triple_fd_default_data_bitrate(nominal);
++        uint32_t code = triple_fd_speed_code(nominal, data);
++        if (!code)
++        {
++            sendDebug("Triple: unsupported CAN3 bitrate pair " + QString::number(nominal) + " / " + QString::number(data) +
++                      " (nominal 125k 250k 500k 1M, data above nominal)");
++            return;
++        }
++        n = triple_encode_settings_fd(cmd, code, listen, true, false);
++        sendDebug("Triple: CAN3 FD " + QString::number(nominal) + " / " + QString::number(data) + " bit/s" + (listen ? " listen only" : ""));
++    }
++    sendToSerial(QByteArray((const char *)cmd, n));
++    setConfigured(busIdx, true);
++}
++
++/* ------------------------------------------------------------------ transmit */
++
++bool TripleSerial::piSendFrame(const TripleGuiFrame& frame)
++{
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++    int busIdx = frame.getBus();
++#else
++    int busIdx = frame.bus;
++#endif
++    if (!serial || !serial->isOpen())
++        return false;
++    if (busIdx < 0 || busIdx >= TRIPLE_PORTS)
++        return false;
++    if (frame.frameType() == TripleGuiFrame::ErrorFrame)
++        return true;
++
++    CANBus bus;
++    if (getBusConfig(busIdx, bus) && (bus.isListenOnly() || !bus.isActive()))
++        return false;
++
++    triple_frame f;
++    memset(&f, 0, sizeof(f));
++    f.port = busIdx;
++    f.eff = frame.hasExtendedFrameFormat();
++    f.rtr = frame.frameType() == TripleGuiFrame::RemoteRequestFrame;
++    f.fd = frame.hasFlexibleDataRateFormat();
++    f.brs = f.fd && frame.hasBitrateSwitch();
++    f.esi = f.fd && frame.hasErrorStateIndicator();
++    f.id = frame.frameId() & (f.eff ? 0x1FFFFFFFu : 0x7FFu);
++
++    QByteArray payload = frame.payload();
++    int maxLen = f.fd ? TRIPLE_MAX_DATA : 8;
++    if (payload.size() > maxLen)
++    {
++        sendDebug("Triple: frame has too much data for " + QString(f.fd ? "CAN FD" : "CAN 2.0") + ", dropped");
++        return false;
++    }
++    if (f.fd && busIdx != 2)
++    {
++        sendDebug("Triple: CAN FD frames can only be sent on CAN3, dropped");
++        return false;
++    }
++    f.len = payload.size();
++    memcpy(f.data, payload.constData(), f.len);
++
++    uint8_t wire[TRIPLE_MTU];
++    int n = triple_encode_frame(&f, wire, sizeof(wire));
++    if (n < 0)
++        return false;
++    if (n > TRIPLE_FW_MAX_WIRE_LEN)
++    {
++        /* longer messages lock the adapter firmware up until power cycle */
++        sendDebug("Triple: frame is " + QString::number(n) + " bytes on the wire, above the adapter limit of " +
++                  QString::number(TRIPLE_FW_MAX_WIRE_LEN) + ", dropped");
++        return false;
++    }
++    sendToSerial(QByteArray((const char *)wire, n));
++    return true;
++}
++
++/* ------------------------------------------------------------------- receive */
++
++void TripleSerial::readSerialData()
++{
++    if (!serial)
++        return;
++    QByteArray data = serial->readAll();
++
++    for (int i = 0; i < data.size(); i++)
++    {
++        uint8_t b = (uint8_t)data.at(i);
++
++        if (rxResync)
++        {
++            if (b == TRIPLE_LAST_BYTE)
++            {
++                rxResync = false;
++                rxEscaped = false;
++                rxCount = 0;
++            }
++            continue;
++        }
++        if (rxCount >= TRIPLE_MTU)
++        {
++            rxResync = true;
++            rxCount = 0;
++            continue;
++        }
++        if (rxCount == 0 && b != TRIPLE_FIRST_BYTE)
++            continue;
++        if (rxCount == 1)
++        {
++            rxBuf[rxCount++] = b;       /* raw length byte, never escaped */
++            continue;
++        }
++        bool wasEscaped = rxEscaped;
++        rxEscaped = false;
++        rxBuf[rxCount++] = b;
++        if (wasEscaped)
++            continue;
++        if (b == TRIPLE_ESC_BYTE)
++            rxEscaped = true;
++        else if (b == TRIPLE_LAST_BYTE)
++        {
++            processMessage(rxBuf, rxCount);
++            rxCount = 0;
++        }
++    }
++}
++
++void TripleSerial::processMessage(const uint8_t *wire, int len)
++{
++    if (consoleWanted())
++    {
++        QString s = "Triple RX <-";
++        for (int i = 0; i < len; i++)
++            s = s % " " % QString::number(wire[i], 16).rightJustified(2, '0');
++        sendDebug(s);
++    }
++
++    triple_msg m;
++    int type = triple_decode(wire, len, &m);
++    if (type < 0)
++    {
++        sendDebug("Triple: dropped message, decode error " + QString::number(type));
++        return;
++    }
++    switch (type)
++    {
++    case TRIPLE_MSG_FRAME:
++        handleFrame(m.frame);
++        break;
++    case TRIPLE_MSG_STATUS:
++        handleStatus(m.status);
++        break;
++    case TRIPLE_MSG_FW_VER:
++        if (fwVersion != QString(m.fw_version))
++        {
++            fwVersion = m.fw_version;
++            sendDebug("Triple: firmware " + fwVersion);
++            emit deviceInfo(fwVersion.toDouble() * 100, 0);
++        }
++        break;
++    }
++}
++
++/* SavvyCAN convention (see gvretserial.cpp): frames carry microseconds
++ * relative to CANConManager::getTimeBasis() in the TimeStamp's microSeconds
++ * field with seconds = 0. The adapter clock is tied to that basis at the
++ * first frame and re-tied whenever the manager resets its basis. */
++qint64 TripleSerial::adapterTimeToMicros(uint32_t ts)
++{
++    qint64 managerBasis = (qint64)CANConManager::getInstance()->getTimeBasis();
++
++    if (tsHaveBase && ts < tsLast)
++        tsWrapAdd += 1ull << 32;
++    tsLast = ts;
++    quint64 unwrapped = tsWrapAdd + ts;
++
++    if (!tsHaveBase || managerBasis != tsManagerBasis)
++    {
++        qint64 nowRelative = QDateTime::currentMSecsSinceEpoch() * 1000ll - managerBasis;
++        tsBaseMicros = nowRelative - (qint64)unwrapped;
++        tsManagerBasis = managerBasis;
++        tsHaveBase = true;
++    }
++    return tsBaseMicros + (qint64)unwrapped;
++}
++
++void TripleSerial::handleFrame(const triple_frame &f)
++{
++    if (isCapSuspended())
++        return;
++
++    TripleGuiFrame frame;
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++    frame.setBus(f.port);
++    frame.setReceived(true);
++#else
++    frame.bus = f.port;
++    frame.isReceived = true;
++#endif
++    frame.setFrameId(f.id);
++    frame.setExtendedFrameFormat(f.eff);
++    frame.setFrameType(f.rtr ? TripleGuiFrame::RemoteRequestFrame : TRIPLE_GUI_DATA_FRAME);
++    if (f.fd)
++    {
++        frame.setFlexibleDataRateFormat(true);
++        frame.setBitrateSwitch(f.brs);
++        frame.setErrorStateIndicator(f.esi);
++    }
++    frame.setPayload(QByteArray((const char *)f.data, f.len));
++
++    if (useSystemTime)
++        frame.setTimeStamp(TripleGuiFrame::TimeStamp::fromMicroSeconds(QDateTime::currentMSecsSinceEpoch() * 1000ll));
++    else if (f.has_ts)
++        frame.setTimeStamp(TripleGuiFrame::TimeStamp(0, adapterTimeToMicros(f.ts)));
++    else
++        frame.setTimeStamp(TripleGuiFrame::TimeStamp(0, hostTimeToMicros()));
++
++    TripleGuiFrame *slot = getQueue().get();
++    if (!slot)
++    {
++        sendDebug("Triple: receive queue full, frame lost");
++        return;
++    }
++    *slot = frame;
++    checkTargettedFrame(frame);
++    getQueue().queue();
++}
++
++qint64 TripleSerial::hostTimeToMicros()
++{
++    return QDateTime::currentMSecsSinceEpoch() * 1000ll - (qint64)CANConManager::getInstance()->getTimeBasis();
++}
++
++/* Bus state from the adapter's counters, same thresholds as the Linux
++ * driver and the CAN specification: warning at 96, passive at 128. The
++ * firmware's own state byte (0 active, 1 passive) is honoured too, and
++ * anything above 1 is taken as bus off (not observed on hardware yet). */
++static int busStateFrom(const triple_port_status &ps)
++{
++    if (ps.state >= 2)
++        return 3;
++    int cnt = ps.tec > ps.rec ? ps.tec : ps.rec;
++    if (ps.state == 1 || cnt >= 128)
++        return 2;
++    if (cnt >= 96)
++        return 1;
++    return 0;
++}
++
++void TripleSerial::handleStatus(const triple_status &st)
++{
++    static const char *stateName[] = { "error active", "error warning", "error passive", "bus off" };
++    for (int i = 0; i < TRIPLE_PORTS; i++)
++    {
++        const triple_port_status &ps = st.port[i];
++        if (ps.tec == lastTec[i] && ps.rec == lastRec[i] && ps.state == lastState[i])
++            continue;
++        lastTec[i] = ps.tec;
++        lastRec[i] = ps.rec;
++        lastState[i] = ps.state;
++
++        int s = busStateFrom(ps);
++        sendDebug("Triple: CAN" + QString::number(i + 1) + " " + stateName[s] +
++                  ", TEC " + QString::number(ps.tec) + " REC " + QString::number(ps.rec));
++        if (s != busState[i])
++        {
++            queueErrorFrame(i, s, busState[i], ps.tec, ps.rec);
++            busState[i] = s;
++        }
++    }
++}
++
++/* Error frame in SocketCAN layout (linux/can/error.h), which SavvyCAN
++ * shows with its error flags: data[1] controller state, data[6] TEC,
++ * data[7] REC. */
++void TripleSerial::queueErrorFrame(int port, int state, int oldState, uint8_t tec, uint8_t rec)
++{
++    if (isCapSuspended())
++        return;
++
++    enum { CRTL_RX_WARNING = 0x04, CRTL_TX_WARNING = 0x08, CRTL_RX_PASSIVE = 0x10,
++           CRTL_TX_PASSIVE = 0x20, CRTL_ACTIVE = 0x40 };
++    uint8_t ctrl = 0;
++    switch (state)
++    {
++    case 0: ctrl = CRTL_ACTIVE; break;
++    case 1: ctrl = tec >= rec ? CRTL_TX_WARNING : CRTL_RX_WARNING; break;
++    case 2: ctrl = tec >= rec ? CRTL_TX_PASSIVE : CRTL_RX_PASSIVE; break;
++    default: break;
++    }
++    Q_UNUSED(oldState);
++
++    QByteArray data(8, 0);
++    data[1] = (char)ctrl;
++    data[6] = (char)tec;
++    data[7] = (char)rec;
++
++    TripleGuiFrame frame;
++    frame.setFrameType(TripleGuiFrame::ErrorFrame);
++    frame.setError(state == 3 ? TripleGuiFrame::BusOffError : TripleGuiFrame::ControllerError);
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++    frame.setBus(port);
++    frame.setReceived(true);
++#else
++    frame.bus = port;
++    frame.isReceived = true;
++#endif
++    frame.setPayload(data);
++    if (useSystemTime)
++        frame.setTimeStamp(TripleGuiFrame::TimeStamp::fromMicroSeconds(QDateTime::currentMSecsSinceEpoch() * 1000ll));
++    else
++        frame.setTimeStamp(TripleGuiFrame::TimeStamp(0, hostTimeToMicros()));
++
++    TripleGuiFrame *slot = getQueue().get();
++    if (!slot)
++        return;
++    *slot = frame;
++    getQueue().queue();
++}
++
++/* debugging data typed into the connection window console: send raw */
++void TripleSerial::debugInput(QByteArray bytes)
++{
++    sendToSerial(bytes);
++}
+diff --git a/connections/triple_serial.h b/connections/triple_serial.h
+new file mode 100755
+index 0000000..c5683e2
+--- /dev/null
++++ b/connections/triple_serial.h
+@@ -0,0 +1,91 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef TRIPLE_SERIAL_H
++#define TRIPLE_SERIAL_H
++
++/*
++ * SavvyCAN connection for the CANLAB USB2CAN Triple adapter over its
++ * CDC ACM serial port: three buses (CAN1, CAN2 classic, CAN3 CAN FD),
++ * hardware receive timestamps, error counters.
++ *
++ * Protocol: see doc/protocol.md in the canlab-cz/triple repository.
++ * Codec: triple_proto.[ch], shared with the Linux kernel driver.
++ */
++
++#include <QSerialPort>
++#include <QByteArray>
++#include <stdint.h>
++
++#include "canconnection.h"
++#include "triple_proto.h"
++
++/* SavvyCAN master (Qt 5) passes CANFrame (a QCanBusFrame); the QT6WIP
++ * branch (Qt 6) uses its own CommFrame. The two differ in a few names. */
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++typedef CommFrame TripleGuiFrame;
++#define TRIPLE_GUI_DATA_FRAME CommFrame::CANDataFrame
++#else
++typedef CANFrame TripleGuiFrame;
++#define TRIPLE_GUI_DATA_FRAME QCanBusFrame::DataFrame
++#endif
++
++class TripleSerial : public CANConnection
++{
++    Q_OBJECT
++
++public:
++    explicit TripleSerial(QString portName);
++    virtual ~TripleSerial();
++
++protected:
++    virtual void piStarted();
++    virtual void piStop();
++    virtual void piSetBusSettings(int pBusIdx, CANBus pBus);
++    virtual bool piGetBusSettings(int pBusIdx, CANBus& pBus);
++    virtual void piSuspend(bool pSuspend);
++    virtual bool piSendFrame(const TripleGuiFrame&);
++
++public slots:
++    void debugInput(QByteArray bytes);
++
++private slots:
++    void readSerialData();
++    void serialError(QSerialPort::SerialPortError err);
++
++private:
++    void connectDevice();
++    void disconnectDevice();
++    void sendToSerial(const QByteArray &bytes);
++    void sendDebug(const QString &text);
++    bool consoleWanted();
++    void sendBusSettings(int busIdx);
++    void processMessage(const uint8_t *wire, int len);
++    void handleFrame(const triple_frame &f);
++    void handleStatus(const triple_status &st);
++    qint64 adapterTimeToMicros(uint32_t ts);
++    qint64 hostTimeToMicros();
++    void queueErrorFrame(int port, int state, int oldState, uint8_t tec, uint8_t rec);
++
++    QSerialPort *serial;
++
++    /* receive stream splitter (same rules as the kernel driver) */
++    uint8_t  rxBuf[TRIPLE_MTU];
++    int      rxCount;
++    bool     rxEscaped;
++    bool     rxResync;
++
++    /* adapter 32-bit microsecond clock, extended and tied to system time */
++    qint64   tsBaseMicros;      /* manager-relative time (us) corresponding to adapter time 0 */
++    qint64   tsManagerBasis;    /* manager basis the offset was computed against */
++    uint32_t tsLast;
++    quint64  tsWrapAdd;
++    bool     tsHaveBase;
++
++    uint8_t  lastTec[TRIPLE_PORTS];
++    uint8_t  lastRec[TRIPLE_PORTS];
++    uint8_t  lastState[TRIPLE_PORTS];
++    int      busState[TRIPLE_PORTS];  /* 0 active, 1 warning, 2 passive, 3 bus off */
++    QString  fwVersion;
++};
++
++#endif // TRIPLE_SERIAL_H
 diff --git a/ui/newconnectiondialog.ui b/ui/newconnectiondialog.ui
 index e459583..8a79fa3 100644
 --- a/ui/newconnectiondialog.ui

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 CANLAB s.r.o.
 """USB2CAN Triple wire protocol, Python reference implementation.
 
 Mirrors driver/triple_proto.c. See doc/protocol.md for the specification.

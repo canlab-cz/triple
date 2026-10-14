@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 CANLAB s.r.o.
 """Talk to a USB2CAN Triple directly over its serial port, no kernel driver.
 Works on Linux, Windows and macOS (needs pyserial: pip install pyserial).
 

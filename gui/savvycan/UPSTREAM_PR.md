@@ -1,19 +1,15 @@
 # Upstream pull request to collin80/SavvyCAN (draft)
 
 Status: prepared locally, **not opened**. The change is committed on
-branch `usb2can-triple` (commit `a1e748d`) in the WSL checkout
+branch `usb2can-triple` (commit `9e8ed96`) in the WSL checkout
 `/home/pavel/SavvyCAN`, on top of upstream master `e439670`.
 
 ## Before opening
 
-1. **License of the codec.** `triple_proto.h` and `triple_proto.c` are
-   marked `SPDX-License-Identifier: GPL-2.0` because they are shared with
-   the Linux kernel module. SavvyCAN is MIT licensed and cannot take a
-   GPL-only file. Proposal: relicense both files as `GPL-2.0 OR MIT`
-   (dual license), which keeps them valid for the kernel module and makes
-   them acceptable upstream. This is CANLAB's decision as copyright
-   holder; after it, update the SPDX lines in `driver/` and re-run
-   `apply.py` so the branch picks them up.
+1. License: resolved. All four added files (`triple_serial.*`,
+   `triple_proto.*`) are MIT (`SPDX-License-Identifier: MIT`, Copyright
+   CANLAB s.r.o.), matching SavvyCAN. The kernel module that shares the
+   codec stays GPL-2.0, which MIT is compatible with.
 2. Fork collin80/SavvyCAN on GitHub, push the branch to the fork, open the
    PR against `master`.
 3. Optionally a second PR against `QT6WIP`: the same files apply there
@@ -53,6 +49,8 @@ Files:
 | `connections/triple_serial.h/.cpp` | the `CANConnection` (`CANCon::TRIPLE`) |
 | `connections/triple_proto.h/.c` | adapter wire protocol codec in plain C, shared with the Linux SocketCAN driver; protocol documented in canlab-cz/triple `doc/protocol.md` |
 | `SavvyCAN.pro`, `canconconst.h`, `canconfactory.cpp`, `canconnectionmodel.cpp`, `connectionwindow.cpp`, `newconnectiondialog.*`, `ui/newconnectiondialog.ui` | registration, 54 lines |
+
+All added files are MIT licensed, like SavvyCAN.
 
 Compatibility: the connection compiles on master (Qt 5.15) and on
 `QT6WIP` (Qt 6.8). A small typedef layer covers `CANFrame` versus

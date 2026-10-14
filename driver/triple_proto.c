@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 CANLAB s.r.o.
 /*
  * USB2CAN Triple wire protocol codec. No kernel dependencies beyond
  * string.h so that tests/codec can compile it on the host.
