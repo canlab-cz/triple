@@ -1,2 +1,8 @@
 canidcalc_test
 pp2canlog_test
+canopen_eds_test
+logprint_test
+canre_test
+aitools_test
+*.out
+*.exe

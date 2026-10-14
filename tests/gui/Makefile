@@ -19,13 +19,24 @@ canopen_eds_test: canopen_eds_test.cpp $(RE)/canopen_eds.h
 logprint_test: logprint_test.cpp $(GUI)/logprintlayout.h
 	$(CXX) $(CXXFLAGS) -I $(GUI) -o $@ logprint_test.cpp
 
-test: canidcalc_test pp2canlog_test canopen_eds_test logprint_test
+canre_test: canre_test.cpp $(RE)/canre.h
+	$(CXX) $(CXXFLAGS) -I $(RE) -o $@ canre_test.cpp
+
+aitools_test: aitools_test.cpp $(RE)/aitools.h $(RE)/canre.h
+	$(CXX) $(CXXFLAGS) -I $(RE) -o $@ aitools_test.cpp
+
+test: canidcalc_test pp2canlog_test canopen_eds_test logprint_test canre_test aitools_test
 	./canidcalc_test
 	./pp2canlog_test
 	./canopen_eds_test ../../tools/canopen_sim.eds
 	./logprint_test
+	./canre_test > canre_test.out || (cat canre_test.out; false)
+	tail -1 canre_test.out
+	./aitools_test > aitools_test.out || (cat aitools_test.out; false)
+	tail -1 aitools_test.out
+	./aitools_test --defs | python3 -c "import json,sys; d=json.load(sys.stdin); print('tool definitions: %d valid JSON tools' % len(d))"
 
 clean:
-	rm -f canidcalc_test pp2canlog_test canopen_eds_test logprint_test
+	rm -f canidcalc_test pp2canlog_test canopen_eds_test logprint_test canre_test canre_test.out aitools_test aitools_test.out
 
 .PHONY: test clean

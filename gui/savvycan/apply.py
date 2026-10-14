@@ -38,7 +38,9 @@ shutil.copy(os.path.join(R, "driver", "include", "triple_proto.h"), os.path.join
 shutil.copy(os.path.join(R, "driver", "triple_proto.c"), os.path.join(S, "connections", "triple_proto.c"))
 for f in ("busstatswindow.h", "busstatswindow.cpp", "canopenwindow.h", "canopenwindow.cpp",
           "savvycompat.h", "canidcalc.h", "canopen_eds.h", "cancalcwindow.h", "cancalcwindow.cpp",
-          "responsemeterwindow.h", "responsemeterwindow.cpp", "datapanelwindow.h", "datapanelwindow.cpp"):
+          "responsemeterwindow.h", "responsemeterwindow.cpp", "datapanelwindow.h", "datapanelwindow.cpp",
+          "canre.h", "aitools.h", "recapture.h", "signalfinderwindow.h", "signalfinderwindow.cpp",
+          "aiassistantwindow.h", "aiassistantwindow.cpp"):
     shutil.copy(os.path.join(R, "gui", "savvycan", "re", f), os.path.join(S, "re", f))
 for f in ("pp2canlog.h", "pp2canlog.cpp", "pp2canlogfmt.h", "logprinter.h", "logprinter.cpp", "logprintlayout.h"):
     shutil.copy(os.path.join(R, "gui", "savvycan", f), os.path.join(S, f))
@@ -86,6 +88,12 @@ if os.path.exists(os.path.join(S, "CMakeLists.txt")):
           "    re/datapanelwindow.cpp re/datapanelwindow.h\n",
           "    re/datapanelwindow.cpp re/datapanelwindow.h\n"
           "    re/canopen_eds.h\n")
+    patch("CMakeLists.txt",
+          "    re/canopen_eds.h\n",
+          "    re/canopen_eds.h\n"
+          "    re/canre.h re/aitools.h re/recapture.h\n"
+          "    re/signalfinderwindow.cpp re/signalfinderwindow.h\n"
+          "    re/aiassistantwindow.cpp re/aiassistantwindow.h\n")
 
 patch("SavvyCAN.pro",
       "    re/temporalgraphwindow.cpp" + BS,
@@ -111,6 +119,10 @@ patch("SavvyCAN.pro",
 patch("SavvyCAN.pro",
       "    re/datapanelwindow.h" + BS,
       "    re/datapanelwindow.h" + BS + "    re/canopen_eds.h" + BS)
+patch("SavvyCAN.pro",
+      "    re/canopen_eds.h" + BS,
+      "    re/canopen_eds.h" + BS + "    re/canre.h" + BS + "    re/aitools.h" + BS + "    re/recapture.h" + BS
+      + "    re/signalfinderwindow.h" + BS + "    re/aiassistantwindow.h" + BS)
 
 patch("SavvyCAN.pro",
       "    framefileio.cpp" + BS,
@@ -121,6 +133,9 @@ patch("SavvyCAN.pro",
 patch("SavvyCAN.pro",
       "    pp2canlog.cpp" + BS,
       "    pp2canlog.cpp" + BS + "    logprinter.cpp" + BS)
+patch("SavvyCAN.pro",
+      "    logprinter.cpp" + BS,
+      "    logprinter.cpp" + BS + "    re/signalfinderwindow.cpp" + BS + "    re/aiassistantwindow.cpp" + BS)
 patch("SavvyCAN.pro",
       "    pp2canlogfmt.h" + BS,
       "    pp2canlogfmt.h" + BS + "    logprinter.h" + BS + "    logprintlayout.h" + BS)
@@ -323,5 +338,29 @@ patch("mainwindow.cpp",
       "                ui->menuFile->insertAction(before, a);\n"
       "        ui->menuFile->insertAction(before, printLog);\n"
       "    }\n")
+
+# RE Tools > Signal Finder and AI Assistant (after the Print Log block)
+patch("mainwindow.cpp",
+      '#include "logprinter.h"\n',
+      '#include "logprinter.h"\n#include "re/signalfinderwindow.h"\n#include "re/aiassistantwindow.h"\n')
+patch("mainwindow.cpp",
+      "        ui->menuFile->insertAction(before, printLog);\n"
+      "    }\n",
+      "        ui->menuFile->insertAction(before, printLog);\n"
+      "    }\n"
+      "    connect(ui->menu_RE_Tools->addAction(tr(\"Signal Finder\")), &QAction::triggered, this, [this]() {\n"
+      "        static QPointer<SignalFinderWindow> w;\n"
+      "        if (!w) w = new SignalFinderWindow(model->getListReference(), this);\n"
+      "        w->show();\n"
+      "        w->raise();\n"
+      "        w->activateWindow();\n"
+      "    });\n"
+      "    connect(ui->menu_RE_Tools->addAction(tr(\"AI Assistant\")), &QAction::triggered, this, [this]() {\n"
+      "        static QPointer<AiAssistantWindow> w;\n"
+      "        if (!w) w = new AiAssistantWindow(model->getListReference(), this);\n"
+      "        w->show();\n"
+      "        w->raise();\n"
+      "        w->activateWindow();\n"
+      "    });\n")
 
 print("done: rebuild SavvyCAN (qmake && make)")

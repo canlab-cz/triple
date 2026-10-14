@@ -138,6 +138,11 @@ port, so it works without the kernel module and on Windows too. See
 
 ![SavvyCAN with a USB2CAN Triple](doc/img/savvycan-triple.png)
 
+For reverse engineering, SavvyCAN gets a Signal Finder (counters, checksums
+and signals found automatically, DBC export, before/after comparison) and
+an AI Assistant that works on the capture through your Anthropic API key,
+with user-set limits on tokens, tool calls, requests and bus access.
+
 `tools/canopen_sim.py` is a small simulated CANopen node (heartbeat, NMT,
 SDO, EMCY, PDOs; EDS in `tools/canopen_sim.eds`) for testing CANopen tools
 on any SocketCAN interface.

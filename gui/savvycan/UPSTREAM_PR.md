@@ -2,7 +2,7 @@
 
 Status: prepared locally, **not opened**. Branch `usb2can-triple` in the
 WSL checkout `/home/pavel/SavvyCAN`, on top of upstream master `e439670`,
-has eight commits:
+has nine commits:
 
 | Commit | Content |
 |---|---|
@@ -14,6 +14,7 @@ has eight commits:
 | `f67667d` | Add Print Log to the File menu |
 | `3a41e68` | Triple: zero padding for CAN FD lengths between DLC steps |
 | `a5f04bf` | Triple: CAN3 bitrate pairs outside the firmware table as raw timing |
+| `5f3585b` | Add Signal Finder and AI Assistant windows (reverse engineering; can be left out or split) |
 
 They can go in one PR or as separate ones; only the first commit is
 specific to the Triple, the tool windows and the PP2CAN log format work

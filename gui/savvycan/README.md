@@ -63,6 +63,43 @@ To try it without a CANopen device, run the simulated node from
 `python3 tools/canopen_sim.py can0 --node 5`. Its EDS is
 `tools/canopen_sim.eds`; press Start (NMT) to make it send PDOs.
 
+## Reverse engineering
+
+* **Signal Finder** (RE Tools) analyzes the captured frames per ID: period
+  and jitter, a bit flip heatmap, and the fields it finds: rolling
+  counters, checksums (XOR, SUM, CRC-8 SAE J1850 and AUTOSAR, with a
+  constant), constant bytes, flags, and signal candidates. Signals are
+  segmented by bit flip rates (inside a signal the flip rate rises from MSB
+  to LSB) in both byte orders, and the byte order that gives the longer
+  field wins. Checked fields go into a DBC file. The second tab compares
+  two time windows ("what changed when I pressed the button"): IDs that
+  appear or vanish, rate changes, and the bits whose level or toggling
+  differs most.
+* **AI Assistant** (RE Tools) is a chat with Claude through your own
+  Anthropic API key. It works on the capture with the same analysis as
+  tools: overview, ID list, per-ID analysis, raw frames, decoded signal
+  values over time, window comparison. It proposes DBC signals in a side
+  panel that you save yourself. Transmitting frames is off by default; when
+  you allow it, every frame needs your confirmation and can be limited to
+  an ID allowlist.
+
+  Everything the assistant spends is bounded by "API key and limits":
+  tokens per reply, tool calls per question, frames and characters per tool
+  result, a session and a daily token budget, and requests per minute. The
+  budgets are checked before each request and the reply size is capped to
+  what is left; usage is counted from the API's own token figures and the
+  daily count survives restarts. With prices per million tokens filled in,
+  the window also shows an estimated cost. The key is kept for the session
+  only unless you tick "Remember" (then it is stored unencrypted in
+  SavvyCAN's settings); without one, `ANTHROPIC_API_KEY` from the
+  environment is used. Your questions and the tool results, which contain
+  capture data, are sent to the configured endpoint.
+
+![Signal Finder on traffic captured from the bus](../../doc/img/savvycan-signal-finder.png)
+
+The analysis is in `re/canre.h` and the assistant's tools and limits in
+`re/aitools.h`, both without Qt and unit tested (`tests/gui`).
+
 ## Apply to an upstream checkout
 
 ```sh

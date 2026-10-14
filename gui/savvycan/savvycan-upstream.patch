@@ -1,5 +1,5 @@
 diff --git a/SavvyCAN.pro b/SavvyCAN.pro
-index d7197dc..8bdb3ef 100644
+index d7197dc..dbd167a 100644
 --- a/SavvyCAN.pro
 +++ b/SavvyCAN.pro
 @@ -28,6 +28,8 @@ SOURCES += main.cpp\
@@ -11,16 +11,18 @@ index d7197dc..8bdb3ef 100644
      connections/mqtt_bus.cpp \
      dbc/dbcnodeduplicateeditor.cpp \
      framesenderobject.cpp \
-@@ -55,6 +57,8 @@ SOURCES += main.cpp\
+@@ -55,6 +57,10 @@ SOURCES += main.cpp\
      candatagrid.cpp \
      framesenderwindow.cpp \
      framefileio.cpp \
 +    pp2canlog.cpp \
 +    logprinter.cpp \
++    re/signalfinderwindow.cpp \
++    re/aiassistantwindow.cpp \
      mainsettingsdialog.cpp \
      scriptingwindow.cpp \
      scriptcontainer.cpp \
-@@ -103,6 +107,11 @@ SOURCES += main.cpp\
+@@ -103,6 +109,11 @@ SOURCES += main.cpp\
      re/sniffer/SnifferDelegate.cpp \
      connections/newconnectiondialog.cpp \
      re/temporalgraphwindow.cpp \
@@ -32,7 +34,7 @@ index d7197dc..8bdb3ef 100644
      re/udsfirmwareuploaderwindow.cpp \
      filterutility.cpp \
      pcaplite.cpp
-@@ -114,6 +123,8 @@ HEADERS  += mainwindow.h \
+@@ -114,6 +125,8 @@ HEADERS  += mainwindow.h \
      connections/canlogserver.h \
      connections/canserver.h \
      connections/lawicel_serial.h \
@@ -41,7 +43,7 @@ index d7197dc..8bdb3ef 100644
      connections/socketcand.h \
      connections/mqtt_bus.h \
      dbc/dbcnodeduplicateeditor.h \
-@@ -149,6 +160,10 @@ HEADERS  += mainwindow.h \
+@@ -149,6 +162,10 @@ HEADERS  += mainwindow.h \
      framesenderwindow.h \
      can_trigger_structs.h \
      framefileio.h \
@@ -52,7 +54,7 @@ index d7197dc..8bdb3ef 100644
      config.h \
      mainsettingsdialog.h \
      scriptingwindow.h \
-@@ -198,6 +213,14 @@ HEADERS  += mainwindow.h \
+@@ -198,6 +215,19 @@ HEADERS  += mainwindow.h \
      re/sniffer/SnifferDelegate.h \
      connections/newconnectiondialog.h \
      re/temporalgraphwindow.h \
@@ -64,6 +66,11 @@ index d7197dc..8bdb3ef 100644
 +    re/responsemeterwindow.h \
 +    re/datapanelwindow.h \
 +    re/canopen_eds.h \
++    re/canre.h \
++    re/aitools.h \
++    re/recapture.h \
++    re/signalfinderwindow.h \
++    re/aiassistantwindow.h \
      re/udsfirmwareuploaderwindow.h \
      filterutility.h \
      pcaplite.h
@@ -2117,10 +2124,10 @@ index 0000000..6382e11
 +
 +#endif // LOGPRINTLAYOUT_H
 diff --git a/mainwindow.cpp b/mainwindow.cpp
-index 56ba04c..a5e6308 100644
+index 56ba04c..f1e7f0d 100644
 --- a/mainwindow.cpp
 +++ b/mainwindow.cpp
-@@ -6,6 +6,14 @@
+@@ -6,6 +6,16 @@
  #include <QtSerialPort/QSerialPortInfo>
  #include "connections/canconmanager.h"
  #include "connections/connectionwindow.h"
@@ -2132,10 +2139,12 @@ index 56ba04c..a5e6308 100644
 +#include "re/datapanelwindow.h"
 +#include "pp2canlog.h"
 +#include "logprinter.h"
++#include "re/signalfinderwindow.h"
++#include "re/aiassistantwindow.h"
  #include "helpwindow.h"
  #include "utility.h"
  #include "filterutility.h"
-@@ -225,8 +233,60 @@ MainWindow::MainWindow(QWidget *parent) :
+@@ -225,8 +235,74 @@ MainWindow::MainWindow(QWidget *parent) :
      //connect(CANConManager::getInstance(), CANConManager::connectionStatusUpdated, this, MainWindow::connectionStatusUpdated);
      connect(CANConManager::getInstance(), SIGNAL(connectionStatusUpdated(int)), this, SLOT(connectionStatusUpdated(int)));
  
@@ -2193,6 +2202,20 @@ index 56ba04c..a5e6308 100644
 +                ui->menuFile->insertAction(before, a);
 +        ui->menuFile->insertAction(before, printLog);
 +    }
++    connect(ui->menu_RE_Tools->addAction(tr("Signal Finder")), &QAction::triggered, this, [this]() {
++        static QPointer<SignalFinderWindow> w;
++        if (!w) w = new SignalFinderWindow(model->getListReference(), this);
++        w->show();
++        w->raise();
++        w->activateWindow();
++    });
++    connect(ui->menu_RE_Tools->addAction(tr("AI Assistant")), &QAction::triggered, this, [this]() {
++        static QPointer<AiAssistantWindow> w;
++        if (!w) w = new AiAssistantWindow(model->getListReference(), this);
++        w->show();
++        w->raise();
++        w->activateWindow();
++    });
      connect(this, SIGNAL(suspendCapturing(bool)), connectionWindow, SLOT(setSuspendAll(bool)));
  
      //these either are unfinished/not working or are not for general use. But,they exist
@@ -2603,6 +2626,1191 @@ index 0000000..3fc52c7
 +} // namespace pp2canlog
 +
 +#endif // PP2CANLOGFMT_H
+diff --git a/re/aiassistantwindow.cpp b/re/aiassistantwindow.cpp
+new file mode 100755
+index 0000000..60b7e67
+--- /dev/null
++++ b/re/aiassistantwindow.cpp
+@@ -0,0 +1,724 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#include "aiassistantwindow.h"
++
++#include <QApplication>
++#include <QCheckBox>
++#include <QComboBox>
++#include <QDate>
++#include <QDialog>
++#include <QDialogButtonBox>
++#include <QDoubleSpinBox>
++#include <QFile>
++#include <QFileDialog>
++#include <QFormLayout>
++#include <QGroupBox>
++#include <QHBoxLayout>
++#include <QJsonDocument>
++#include <QKeyEvent>
++#include <QLabel>
++#include <QLineEdit>
++#include <QMessageBox>
++#include <QNetworkAccessManager>
++#include <QNetworkReply>
++#include <QNetworkRequest>
++#include <QPlainTextEdit>
++#include <QPushButton>
++#include <QRegularExpression>
++#include <QScrollBar>
++#include <QSettings>
++#include <QSpinBox>
++#include <QSplitter>
++#include <QTextBrowser>
++#include <QVBoxLayout>
++#include <functional>
++
++#include "connections/canconmanager.h"
++#include "recapture.h"
++
++namespace {
++const char *MODELS[] = { "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5" };
++const char *DEFAULT_ENDPOINT = "https://api.anthropic.com";
++const char *API_VERSION = "2023-06-01";
++
++QString today() { return QDate::currentDate().toString(Qt::ISODate); }
++
++QString kTokens(long v)
++{
++    return v >= 10000 ? QString::number(v / 1000.0, 'f', 0) + "k" : v >= 1000 ? QString::number(v / 1000.0, 'f', 1) + "k" : QString::number(v);
++}
++
++/* Ctrl+Enter sends */
++class InputFilter : public QObject
++{
++public:
++    InputFilter(QObject *parent, std::function<void()> send) : QObject(parent), send(std::move(send)) {}
++protected:
++    bool eventFilter(QObject *o, QEvent *e) override
++    {
++        if (e->type() == QEvent::KeyPress)
++        {
++            QKeyEvent *k = static_cast<QKeyEvent *>(e);
++            if ((k->key() == Qt::Key_Return || k->key() == Qt::Key_Enter) && (k->modifiers() & Qt::ControlModifier))
++            {
++                send();
++                return true;
++            }
++        }
++        return QObject::eventFilter(o, e);
++    }
++private:
++    std::function<void()> send;
++};
++}
++
++AiAssistantWindow::AiAssistantWindow(const QVector<GuiFrame> *frameList, QWidget *parent)
++    : QWidget(parent, Qt::Window), frames(frameList)
++{
++    setWindowTitle(tr("AI Assistant"));
++    resize(1200, 860);
++    clock.start();
++
++    modelCombo = new QComboBox(this);
++    modelCombo->setEditable(true);
++    for (const char *m : MODELS) modelCombo->addItem(m);
++    modelCombo->setMinimumWidth(200);
++    QPushButton *settingsBtn = new QPushButton(tr("API key and limits..."), this);
++    QPushButton *newBtn = new QPushButton(tr("New conversation"), this);
++    usageLabel = new QLabel(this);
++    usageLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
++    QHBoxLayout *top = new QHBoxLayout;
++    top->addWidget(new QLabel(tr("Model"), this));
++    top->addWidget(modelCombo);
++    top->addWidget(settingsBtn);
++    top->addWidget(newBtn);
++    top->addWidget(usageLabel, 1);
++
++    transcript = new QTextBrowser(this);
++    transcript->setOpenExternalLinks(true);
++    transcript->setPlaceholderText(tr("Ask about the captured traffic, for example: \"Which IDs look like wheel speeds?\" or "
++                                      "\"I pressed the brake pedal at about 12 s and released it at 15 s; find the brake signal.\""));
++
++    dbcView = new QPlainTextEdit(this);
++    dbcView->setReadOnly(true);
++    dbcView->setPlaceholderText(tr("DBC proposals from the assistant appear here. Nothing is applied until you save them."));
++    QPushButton *saveDbcBtn = new QPushButton(tr("Save DBC..."), this);
++    QWidget *dbcBox = new QWidget(this);
++    QVBoxLayout *dl = new QVBoxLayout(dbcBox);
++    dl->setContentsMargins(0, 0, 0, 0);
++    dl->addWidget(new QLabel(tr("Proposed DBC"), this));
++    dl->addWidget(dbcView);
++    dl->addWidget(saveDbcBtn);
++
++    QSplitter *split = new QSplitter(Qt::Horizontal, this);
++    split->addWidget(transcript);
++    split->addWidget(dbcBox);
++    split->setStretchFactor(0, 3);
++    split->setStretchFactor(1, 1);
++
++    input = new QPlainTextEdit(this);
++    input->setPlaceholderText(tr("Your question (Ctrl+Enter sends)"));
++    input->setMaximumHeight(110);
++    sendBtn = new QPushButton(tr("Send"), this);
++    stopBtn = new QPushButton(tr("Stop"), this);
++    stopBtn->setEnabled(false);
++    QVBoxLayout *btns = new QVBoxLayout;
++    btns->addWidget(sendBtn);
++    btns->addWidget(stopBtn);
++    QHBoxLayout *bottom = new QHBoxLayout;
++    bottom->addWidget(input, 1);
++    bottom->addLayout(btns);
++    statusLabel = new QLabel(this);
++
++    QVBoxLayout *layout = new QVBoxLayout(this);
++    layout->addLayout(top);
++    layout->addWidget(split, 1);
++    layout->addLayout(bottom);
++    layout->addWidget(statusLabel);
++
++    nam = new QNetworkAccessManager(this);
++    retryTimer.setSingleShot(true);
++    connect(&retryTimer, &QTimer::timeout, this, &AiAssistantWindow::requestNext);
++    connect(sendBtn, &QPushButton::clicked, this, &AiAssistantWindow::sendClicked);
++    connect(stopBtn, &QPushButton::clicked, this, &AiAssistantWindow::stopClicked);
++    connect(newBtn, &QPushButton::clicked, this, &AiAssistantWindow::newConversation);
++    connect(settingsBtn, &QPushButton::clicked, this, &AiAssistantWindow::settingsClicked);
++    connect(saveDbcBtn, &QPushButton::clicked, this, &AiAssistantWindow::saveDbc);
++    connect(modelCombo, &QComboBox::currentTextChanged, this, [this](const QString &m) {
++        model = m.trimmed();
++        QSettings().setValue("AiAssistant/model", model);
++    });
++    input->installEventFilter(new InputFilter(this, [this]() { sendClicked(); }));
++
++    loadSettings();
++    updateUsageLabel();
++}
++
++/* ---------------------------------------------------------------- settings */
++
++void AiAssistantWindow::loadSettings()
++{
++    QSettings s;
++    s.beginGroup("AiAssistant");
++    model = s.value("model", MODELS[0]).toString();
++    endpoint = s.value("endpoint", DEFAULT_ENDPOINT).toString();
++    limits.maxOutputTokens = s.value("maxOutputTokens", limits.maxOutputTokens).toInt();
++    limits.maxToolCalls = s.value("maxToolCalls", limits.maxToolCalls).toInt();
++    limits.maxFramesPerResult = s.value("maxFramesPerResult", limits.maxFramesPerResult).toInt();
++    limits.maxResultChars = s.value("maxResultChars", limits.maxResultChars).toInt();
++    limits.sessionTokenBudget = s.value("sessionTokenBudget", qlonglong(limits.sessionTokenBudget)).toLongLong();
++    limits.dailyTokenBudget = s.value("dailyTokenBudget", qlonglong(limits.dailyTokenBudget)).toLongLong();
++    limits.maxRequestsPerMinute = s.value("maxRequestsPerMinute", limits.maxRequestsPerMinute).toInt();
++    limits.allowTransmit = s.value("allowTransmit", false).toBool();
++    limits.transmitAllowlist.clear();
++    for (const QString &t : s.value("transmitAllowlist").toString().split(QRegularExpression("[,\\s]+"), Qt::SkipEmptyParts))
++    {
++        uint32_t id;
++        if (aitools::parseId(t.toStdString(), id)) limits.transmitAllowlist.insert(id);
++    }
++    limits.priceInputPerMTok = s.value("priceInputPerMTok", 0.0).toDouble();
++    limits.priceOutputPerMTok = s.value("priceOutputPerMTok", 0.0).toDouble();
++    if (s.value("usageDay").toString() == today())
++    {
++        budget.day = today().toStdString();
++        budget.today.input = s.value("usageInput").toLongLong();
++        budget.today.output = s.value("usageOutput").toLongLong();
++        budget.today.cacheWrite = s.value("usageCacheWrite").toLongLong();
++        budget.today.cacheRead = s.value("usageCacheRead").toLongLong();
++        budget.today.requests = s.value("usageRequests").toLongLong();
++    }
++    s.endGroup();
++    int i = modelCombo->findText(model);
++    if (i < 0) modelCombo->addItem(model), i = modelCombo->count() - 1;
++    modelCombo->setCurrentIndex(i);
++}
++
++void AiAssistantWindow::saveUsage()
++{
++    QSettings s;
++    s.beginGroup("AiAssistant");
++    s.setValue("usageDay", QString::fromStdString(budget.day));
++    s.setValue("usageInput", qlonglong(budget.today.input));
++    s.setValue("usageOutput", qlonglong(budget.today.output));
++    s.setValue("usageCacheWrite", qlonglong(budget.today.cacheWrite));
++    s.setValue("usageCacheRead", qlonglong(budget.today.cacheRead));
++    s.setValue("usageRequests", qlonglong(budget.today.requests));
++    s.endGroup();
++}
++
++QString AiAssistantWindow::apiKey() const
++{
++    if (!sessionKey.isEmpty()) return sessionKey;
++    QString k = QSettings().value("AiAssistant/apiKey").toString();
++    if (!k.isEmpty()) return k;
++    return qEnvironmentVariable("ANTHROPIC_API_KEY");
++}
++
++void AiAssistantWindow::settingsClicked()
++{
++    QDialog dlg(this);
++    dlg.setWindowTitle(tr("AI Assistant: API key and limits"));
++    QSettings s;
++    s.beginGroup("AiAssistant");
++
++    QLineEdit *key = new QLineEdit(sessionKey.isEmpty() ? s.value("apiKey").toString() : sessionKey, &dlg);
++    key->setEchoMode(QLineEdit::Password);
++    key->setPlaceholderText(qEnvironmentVariableIsSet("ANTHROPIC_API_KEY") ? tr("using ANTHROPIC_API_KEY from the environment") : tr("sk-ant-..."));
++    QCheckBox *showKey = new QCheckBox(tr("show"), &dlg);
++    connect(showKey, &QCheckBox::toggled, key, [key](bool on) { key->setEchoMode(on ? QLineEdit::Normal : QLineEdit::Password); });
++    QCheckBox *remember = new QCheckBox(tr("Remember on this computer (stored unencrypted in SavvyCAN's settings)"), &dlg);
++    remember->setChecked(!s.value("apiKey").toString().isEmpty());
++    QHBoxLayout *keyRow = new QHBoxLayout;
++    keyRow->addWidget(key, 1);
++    keyRow->addWidget(showKey);
++    QLineEdit *ep = new QLineEdit(endpoint, &dlg);
++
++    auto ispin = [&dlg](int lo, int hi, int v, int step = 1) {
++        QSpinBox *sp = new QSpinBox(&dlg);
++        sp->setRange(lo, hi);
++        sp->setSingleStep(step);
++        sp->setValue(v);
++        sp->setGroupSeparatorShown(true);
++        return sp;
++    };
++    QSpinBox *maxOut = ispin(256, 64000, limits.maxOutputTokens, 256);
++    QSpinBox *maxTools = ispin(1, 100, limits.maxToolCalls);
++    QSpinBox *maxFrames = ispin(10, 5000, limits.maxFramesPerResult, 10);
++    QSpinBox *maxChars = ispin(1000, 200000, limits.maxResultChars, 1000);
++    QSpinBox *session = ispin(0, 1000000000, int(limits.sessionTokenBudget), 10000);
++    QSpinBox *daily = ispin(0, 1000000000, int(limits.dailyTokenBudget), 100000);
++    QSpinBox *rpm = ispin(0, 600, limits.maxRequestsPerMinute);
++    session->setSpecialValueText(tr("no limit"));
++    daily->setSpecialValueText(tr("no limit"));
++    rpm->setSpecialValueText(tr("no limit"));
++    QDoubleSpinBox *priceIn = new QDoubleSpinBox(&dlg);
++    QDoubleSpinBox *priceOut = new QDoubleSpinBox(&dlg);
++    for (QDoubleSpinBox *p : { priceIn, priceOut })
++    {
++        p->setRange(0, 1000);
++        p->setDecimals(2);
++        p->setPrefix("$ ");
++        p->setSpecialValueText(tr("not shown"));
++    }
++    priceIn->setValue(limits.priceInputPerMTok);
++    priceOut->setValue(limits.priceOutputPerMTok);
++    QCheckBox *tx = new QCheckBox(tr("Allow the assistant to transmit frames (each frame still needs your confirmation)"), &dlg);
++    tx->setChecked(limits.allowTransmit);
++    QLineEdit *allow = new QLineEdit(s.value("transmitAllowlist").toString(), &dlg);
++    allow->setPlaceholderText(tr("only these IDs (hex, comma separated); empty = any"));
++    allow->setEnabled(tx->isChecked());
++    connect(tx, &QCheckBox::toggled, allow, &QLineEdit::setEnabled);
++
++    QFormLayout *api = new QFormLayout;
++    api->addRow(tr("API key"), keyRow);
++    api->addRow(QString(), remember);
++    api->addRow(tr("Endpoint"), ep);
++    QGroupBox *apiBox = new QGroupBox(tr("Anthropic API"), &dlg);
++    apiBox->setLayout(api);
++
++    QFormLayout *lim = new QFormLayout;
++    lim->addRow(tr("Max tokens per reply"), maxOut);
++    lim->addRow(tr("Max tool calls per question"), maxTools);
++    lim->addRow(tr("Max frames / points per tool result"), maxFrames);
++    lim->addRow(tr("Max characters per tool result"), maxChars);
++    lim->addRow(tr("Session token budget"), session);
++    lim->addRow(tr("Daily token budget"), daily);
++    lim->addRow(tr("Max requests per minute"), rpm);
++    lim->addRow(tr("Price per million input tokens"), priceIn);
++    lim->addRow(tr("Price per million output tokens"), priceOut);
++    QGroupBox *limBox = new QGroupBox(tr("Limits (checked before every request; token budgets count input, output and cache tokens)"), &dlg);
++    limBox->setLayout(lim);
++
++    QFormLayout *txl = new QFormLayout;
++    txl->addRow(tx);
++    txl->addRow(tr("Transmit allowlist"), allow);
++    QGroupBox *txBox = new QGroupBox(tr("Bus access"), &dlg);
++    txBox->setLayout(txl);
++
++    QLabel *note = new QLabel(tr("Your questions and the tool results, which contain data from the capture, are sent to the "
++                                 "endpoint above. Today: %1 tokens in %2 requests.")
++                                  .arg(budget.today.total()).arg(budget.today.requests), &dlg);
++    note->setWordWrap(true);
++    QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
++    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
++    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
++    QVBoxLayout *v = new QVBoxLayout(&dlg);
++    v->addWidget(apiBox);
++    v->addWidget(limBox);
++    v->addWidget(txBox);
++    v->addWidget(note);
++    v->addWidget(bb);
++    if (dlg.exec() != QDialog::Accepted)
++        return;
++
++    QString k = key->text().trimmed();
++    if (remember->isChecked() && !k.isEmpty()) { s.setValue("apiKey", k); sessionKey.clear(); }
++    else { s.remove("apiKey"); sessionKey = k; }
++    s.setValue("endpoint", ep->text().trimmed().isEmpty() ? QString(DEFAULT_ENDPOINT) : ep->text().trimmed());
++    s.setValue("maxOutputTokens", maxOut->value());
++    s.setValue("maxToolCalls", maxTools->value());
++    s.setValue("maxFramesPerResult", maxFrames->value());
++    s.setValue("maxResultChars", maxChars->value());
++    s.setValue("sessionTokenBudget", session->value());
++    s.setValue("dailyTokenBudget", daily->value());
++    s.setValue("maxRequestsPerMinute", rpm->value());
++    s.setValue("priceInputPerMTok", priceIn->value());
++    s.setValue("priceOutputPerMTok", priceOut->value());
++    s.setValue("allowTransmit", tx->isChecked());
++    s.setValue("transmitAllowlist", allow->text().trimmed());
++    s.endGroup();
++    loadSettings();
++    updateUsageLabel();
++}
++
++void AiAssistantWindow::updateUsageLabel()
++{
++    QString t = tr("Session %1 tokens (in %2, out %3, cache %4) | today %5")
++                    .arg(kTokens(budget.session.total()), kTokens(budget.session.input), kTokens(budget.session.output),
++                         kTokens(budget.session.cacheWrite + budget.session.cacheRead), kTokens(budget.today.total()));
++    if (limits.dailyTokenBudget > 0) t += tr(" of %1").arg(kTokens(limits.dailyTokenBudget));
++    if (limits.priceInputPerMTok > 0 || limits.priceOutputPerMTok > 0)
++        t += tr(" | about $%1 session, $%2 today").arg(budget.cost(limits, budget.session), 0, 'f', 2).arg(budget.cost(limits, budget.today), 0, 'f', 2);
++    usageLabel->setText(t);
++}
++
++/* -------------------------------------------------------------- transcript */
++
++void AiAssistantWindow::appendTranscript(const QString &markdown)
++{
++    transcriptMd += markdown + "\n\n";
++    transcript->setMarkdown(transcriptMd);
++    transcript->verticalScrollBar()->setValue(transcript->verticalScrollBar()->maximum());
++}
++
++void AiAssistantWindow::newConversation()
++{
++    if (busy) stopClicked();
++    history = QJsonArray();
++    transcriptMd.clear();
++    transcript->clear();
++    statusLabel->clear();
++}
++
++/* ---------------------------------------------------------------- requests */
++
++void AiAssistantWindow::sendClicked()
++{
++    QString q = input->toPlainText().trimmed();
++    if (busy || q.isEmpty()) return;
++    if (apiKey().isEmpty())
++    {
++        settingsClicked();
++        if (apiKey().isEmpty()) return;
++    }
++    fillCapture(cap, *frames);                  /* the tools see the frames captured up to now */
++    if (cap.size() == 0)
++        appendTranscript(tr("*Note: the capture is empty; the assistant has no frames to work with.*"));
++    input->clear();
++    appendTranscript("**You:** " + q);
++    QJsonObject msg{ { "role", "user" }, { "content", q } };
++    history.append(msg);
++    toolCalls = 0;
++    limitHit = false;
++    busy = true;
++    sendBtn->setEnabled(false);
++    stopBtn->setEnabled(true);
++    requestNext();
++}
++
++void AiAssistantWindow::requestNext()
++{
++    if (!busy) return;
++    QJsonArray tools = QJsonDocument::fromJson(QByteArray::fromStdString(aitools::toolDefinitions(limits))).array();
++    if (!tools.isEmpty())
++    {
++        QJsonObject last = tools.last().toObject();
++        last["cache_control"] = QJsonObject{ { "type", "ephemeral" } };     /* tools and system prompt are cached */
++        tools.replace(tools.size() - 1, last);
++    }
++    QJsonArray system{ QJsonObject{ { "type", "text" }, { "text", QString::fromStdString(aitools::systemPrompt()) },
++                                    { "cache_control", QJsonObject{ { "type", "ephemeral" } } } } };
++    QJsonObject body{ { "model", model }, { "system", system }, { "tools", tools }, { "messages", history } };
++    long estimate = aitools::estimateTokens(size_t(QJsonDocument(body).toJson(QJsonDocument::Compact).size()));
++
++    long long waitMs = 0;
++    std::string why = budget.check(limits, clock.elapsed(), today().toStdString(), estimate, waitMs);
++    if (!why.empty())
++    {
++        if (waitMs > 0)
++        {
++            statusLabel->setText(tr("Waiting %1 s: %2").arg((waitMs + 999) / 1000).arg(QString::fromStdString(why)));
++            retryTimer.start(int(waitMs) + 50);
++            return;
++        }
++        closeDanglingToolUse("not sent: " + QString::fromStdString(why));
++        finishQuestion(tr("Stopped by your limits: %1. Raise them under \"API key and limits\" to continue.").arg(QString::fromStdString(why)));
++        return;
++    }
++    int maxTokens = budget.maxTokens(limits, estimate);
++    if (maxTokens < 256)
++    {
++        closeDanglingToolUse("not sent: token budget nearly used up");
++        finishQuestion(tr("Stopped by your limits: less than 256 tokens of budget left for a reply."));
++        return;
++    }
++    body["max_tokens"] = maxTokens;
++
++    QNetworkRequest req(QUrl(endpoint + "/v1/messages"));
++    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
++    req.setRawHeader("x-api-key", apiKey().toUtf8());
++    req.setRawHeader("anthropic-version", API_VERSION);
++    req.setTransferTimeout(300000);
++    budget.requestSent(clock.elapsed());
++    statusLabel->setText(tr("Asking %1 (about %2 input tokens, at most %3 output tokens)...").arg(model).arg(estimate).arg(maxTokens));
++    reply = nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
++    connect(reply, &QNetworkReply::finished, this, &AiAssistantWindow::replyFinished);
++}
++
++void AiAssistantWindow::replyFinished()
++{
++    QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
++    if (!r) return;
++    r->deleteLater();
++    if (r != reply || !busy) return;            /* stopped meanwhile */
++    reply = nullptr;
++
++    int status = r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
++    QByteArray raw = r->readAll();
++    QJsonObject resp = QJsonDocument::fromJson(raw).object();
++    if (r->error() != QNetworkReply::NoError || status != 200)
++    {
++        QString msg = resp.value("error").toObject().value("message").toString();
++        if (msg.isEmpty()) msg = r->errorString();
++        QString hint;
++        if (status == 401) hint = tr(" Check the API key.");
++        else if (status == 429) hint = tr(" The API's own rate limit; try again later or lower the requests per minute.");
++        else if (status == 529) hint = tr(" The API is overloaded; try again later.");
++        closeDanglingToolUse("request failed");
++        finishQuestion(tr("API error %1: %2.%3").arg(status).arg(msg, hint));
++        return;
++    }
++
++    QJsonObject u = resp.value("usage").toObject();
++    aitools::Usage usage;
++    usage.input = u.value("input_tokens").toInt();
++    usage.output = u.value("output_tokens").toInt();
++    usage.cacheWrite = u.value("cache_creation_input_tokens").toInt();
++    usage.cacheRead = u.value("cache_read_input_tokens").toInt();
++    usage.requests = 1;
++    budget.addUsage(today().toStdString(), usage);
++    saveUsage();
++    updateUsageLabel();
++
++    QJsonArray content = resp.value("content").toArray();
++    history.append(QJsonObject{ { "role", "assistant" }, { "content", content } });
++    QJsonArray results;
++    bool stopNow = false;
++    for (const QJsonValue &v : content)                 /* in the order the API returned them */
++    {
++        QJsonObject b = v.toObject();
++        if (b.value("type").toString() == "text" && !b.value("text").toString().trimmed().isEmpty())
++            appendTranscript("**Claude:** " + b.value("text").toString().trimmed());
++        else if (b.value("type").toString() == "tool_use")
++            results.append(runTool(b.value("id").toString(), b.value("name").toString(), b.value("input").toObject(), stopNow));
++    }
++
++    QString stop = resp.value("stop_reason").toString();
++    if (stop == "tool_use" && !results.isEmpty())
++    {
++        history.append(QJsonObject{ { "role", "user" }, { "content", results } });
++        if (stopNow)
++        {
++            finishQuestion(tr("Stopped: the assistant kept calling tools after the limit of %1 tool calls per question.").arg(limits.maxToolCalls));
++            return;
++        }
++        requestNext();
++        return;
++    }
++    if (stop == "max_tokens")
++        finishQuestion(tr("The reply was cut at the limit of %1 tokens per reply.").arg(limits.maxOutputTokens));
++    else
++        finishQuestion();
++}
++
++void AiAssistantWindow::finishQuestion(const QString &note)
++{
++    busy = false;
++    retryTimer.stop();
++    sendBtn->setEnabled(true);
++    stopBtn->setEnabled(false);
++    statusLabel->setText(note);
++    if (!note.isEmpty())
++        appendTranscript("*" + note + "*");
++}
++
++void AiAssistantWindow::stopClicked()
++{
++    if (!busy) return;
++    retryTimer.stop();
++    if (reply)
++    {
++        QNetworkReply *r = reply;
++        reply = nullptr;
++        r->abort();
++    }
++    closeDanglingToolUse("cancelled by the user");
++    finishQuestion(tr("Stopped."));
++}
++
++/* An assistant turn with tool_use must be followed by its tool_result, or
++ * the next request is rejected; close it if the loop ends early. */
++void AiAssistantWindow::closeDanglingToolUse(const QString &why)
++{
++    if (history.isEmpty()) return;
++    QJsonObject last = history.last().toObject();
++    if (last.value("role").toString() != "assistant") return;
++    QJsonArray results;
++    for (const QJsonValue &v : last.value("content").toArray())
++        if (v.toObject().value("type").toString() == "tool_use")
++            results.append(QJsonObject{ { "type", "tool_result" }, { "tool_use_id", v.toObject().value("id").toString() },
++                                        { "content", why }, { "is_error", true } });
++    if (!results.isEmpty())
++        history.append(QJsonObject{ { "role", "user" }, { "content", results } });
++}
++
++/* ------------------------------------------------------------------- tools */
++
++QJsonObject AiAssistantWindow::runTool(const QString &id, const QString &name, const QJsonObject &in, bool &stopNow)
++{
++    QString text;
++    bool error = false;
++    toolCalls++;
++    if (toolCalls > limits.maxToolCalls)
++    {
++        text = tr("Tool call limit reached (%1 per question, set by the user). Answer with what you have.").arg(limits.maxToolCalls);
++        error = true;
++        if (limitHit) stopNow = true;           /* second time over the limit */
++        limitHit = true;
++    }
++    else if (name == "propose_dbc")
++        text = proposeDbc(in, error);
++    else if (name == "send_frame")
++        text = sendFrame(in);
++    else
++    {
++        if (captureStale)
++        {
++            fillCapture(cap, *frames);
++            captureStale = false;
++        }
++        aitools::Args a;
++        for (auto it = in.begin(); it != in.end(); ++it)
++        {
++            if (it.value().isString()) a.str[it.key().toStdString()] = it.value().toString().toStdString();
++            else if (it.value().isDouble()) a.num[it.key().toStdString()] = it.value().toDouble();
++            else if (it.value().isBool()) a.flag[it.key().toStdString()] = it.value().toBool();
++        }
++        QApplication::setOverrideCursor(Qt::WaitCursor);
++        aitools::Result r = aitools::run(name.toStdString(), a, cap, limits);
++        QApplication::restoreOverrideCursor();
++        text = QString::fromStdString(r.text);
++        error = r.error;
++    }
++    QStringList args;
++    for (auto it = in.begin(); it != in.end(); ++it)
++        if (!it.value().isArray() && !it.value().isObject())
++            args << it.key() + "=" + it.value().toVariant().toString();
++    appendTranscript(QString("> tool `%1` %2 -> %3").arg(name, args.join(", "),
++                                                          error ? tr("error: ") + text.left(160) : tr("%1 characters").arg(text.size())));
++    QJsonObject res{ { "type", "tool_result" }, { "tool_use_id", id }, { "content", text } };
++    if (error) res["is_error"] = true;
++    return res;
++}
++
++QString AiAssistantWindow::proposeDbc(const QJsonObject &in, bool &error)
++{
++    int added = 0;
++    QStringList problems;
++    std::vector<canre::IdInfo> ids = canre::listIds(cap);
++    for (const QJsonValue &mv : in.value("messages").toArray())
++    {
++        QJsonObject mo = mv.toObject();
++        QString idText = mo.value("id").toString();
++        uint32_t id;
++        if (!aitools::parseId(idText.toStdString(), id))
++        {
++            problems << tr("message id '%1' is not a hex CAN ID").arg(idText);
++            continue;
++        }
++        canre::FrameKey key;
++        key.id = id;
++        key.ext = id > 0x7FF;
++        int capturedLen = 8;
++        for (const canre::IdInfo &i : ids)
++            if (i.key.id == id)
++            {
++                key = i.key;
++                if (!i.lengths.empty()) capturedLen = *i.lengths.rbegin();   /* longest length seen */
++                break;
++            }
++        std::vector<canre::DbcSignal> sigs;
++        for (const QJsonValue &sv : mo.value("signals").toArray())
++        {
++            QJsonObject so = sv.toObject();
++            canre::DbcSignal s;
++            s.name = so.value("name").toString().toStdString();
++            s.startBit = so.value("start_bit").toInt(-1);
++            s.length = so.value("length").toInt(0);
++            s.bigEndian = so.value("byte_order").toString() == "motorola";
++            s.isSigned = so.value("signed").toBool();
++            s.factor = so.value("factor").toDouble(1);
++            s.offset = so.value("offset").toDouble(0);
++            s.minV = so.value("min").toDouble(0);
++            s.maxV = so.value("max").toDouble(0);
++            s.unit = so.value("unit").toString().toStdString();
++            s.comment = so.value("comment").toString().toStdString();
++            if (s.name.empty() || s.length < 1 || s.length > 64 || s.startBit < 0 || s.startBit > 511)
++            {
++                problems << tr("signal '%1' of %2: needs a name, start_bit 0..511 and length 1..64").arg(QString::fromStdString(s.name), idText);
++                continue;
++            }
++            sigs.push_back(s);
++        }
++        if (sigs.empty())
++        {
++            problems << tr("message %1 has no valid signals").arg(idText);
++            continue;
++        }
++        canre::DbcMessage *m = nullptr;
++        for (canre::DbcMessage &x : proposals) if (x.key == key) m = &x;
++        if (!m)
++        {
++            canre::DbcMessage nm;
++            nm.key = key;
++            nm.length = capturedLen;
++            proposals.push_back(nm);
++            m = &proposals.back();
++        }
++        m->name = mo.value("name").toString("MSG_" + idText).toStdString();
++        m->length = mo.value("length").toInt(m->length);
++        for (const canre::DbcSignal &s : sigs)
++        {
++            auto same = std::find_if(m->signals_.begin(), m->signals_.end(), [&](const canre::DbcSignal &o) { return o.name == s.name; });
++            if (same != m->signals_.end()) *same = s;
++            else m->signals_.push_back(s);
++            added++;
++        }
++    }
++    if (!proposals.empty())
++        dbcView->setPlainText(QString::fromStdString(canre::toDbc(proposals)));
++    error = added == 0;
++    QString text = tr("%1 signals shown to the user in the proposal panel; they decide whether to save it.").arg(added);
++    if (!problems.isEmpty())
++        text += tr(" Not accepted: ") + problems.join("; ") + ".";
++    return text;
++}
++
++QString AiAssistantWindow::sendFrame(const QJsonObject &in)
++{
++    if (!limits.allowTransmit)
++        return tr("refused: transmitting is disabled in the user's settings");
++    uint32_t id;
++    if (!aitools::parseId(in.value("id").toString().toStdString(), id))
++        return tr("refused: invalid id");
++    if (!limits.transmitAllowlist.empty() && !limits.transmitAllowlist.count(id))
++        return tr("refused: ID %1 is not on the user's transmit allowlist").arg(id, 0, 16);
++    QByteArray data = QByteArray::fromHex(in.value("data").toString().toLatin1());
++    if (data.size() > 64)
++        return tr("refused: more than 64 data bytes");
++    int bus = in.value("bus").toInt();
++    bool ext = in.value("extended").toBool(id > 0x7FF);
++    QString frameText = QString("bus %1, ID %2%3, data %4").arg(bus).arg(id, ext ? 8 : 3, 16, QChar('0')).arg(ext ? " (extended)" : "")
++                            .arg(QString(data.toHex(' ').toUpper()));
++    QMessageBox::StandardButton b = QMessageBox::question(
++        this, tr("AI Assistant wants to transmit"),
++        tr("Transmit this frame on the bus?\n\n%1\n\nReason given: %2").arg(frameText, in.value("reason").toString()),
++        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
++    if (b != QMessageBox::Yes)
++        return tr("the user refused to transmit %1").arg(frameText);
++    CANConManager::getInstance()->sendFrame(guiMakeFrame(bus, id, ext, data));
++    captureStale = true;                        /* the next data tool sees the reaction */
++    return tr("sent %1; the capture ended at %2 s when it was sent, frames after that are the reaction")
++        .arg(frameText).arg(cap.spanSeconds(), 0, 'f', 3);
++}
++
++void AiAssistantWindow::saveDbc()
++{
++    if (proposals.empty())
++    {
++        QMessageBox::information(this, tr("AI Assistant"), tr("No DBC proposal yet."));
++        return;
++    }
++    QSettings settings;
++    QString path = QFileDialog::getSaveFileName(this, tr("Save DBC"), settings.value("SignalFinder/dbcPath").toString(), tr("DBC (*.dbc)"));
++    if (path.isEmpty()) return;
++    QFile f(path);
++    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
++    {
++        QMessageBox::warning(this, tr("AI Assistant"), tr("Cannot write %1").arg(path));
++        return;
++    }
++    f.write(QByteArray::fromStdString(canre::toDbc(proposals)));
++    settings.setValue("SignalFinder/dbcPath", path);
++    statusLabel->setText(tr("saved %1; load it with File > DBC File Manager").arg(path));
++}
+diff --git a/re/aiassistantwindow.h b/re/aiassistantwindow.h
+new file mode 100755
+index 0000000..5c550a6
+--- /dev/null
++++ b/re/aiassistantwindow.h
+@@ -0,0 +1,96 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef AIASSISTANTWINDOW_H
++#define AIASSISTANTWINDOW_H
++
++/*
++ * RE Tools > AI Assistant: a chat with Claude (Anthropic Messages API, the
++ * user's own API key) that reverse engineers the captured traffic with the
++ * tools of re/aitools.h: overview, per-ID analysis, raw frames, decoded
++ * signal values, time window comparison, DBC proposals, and - only when
++ * the user allows it - transmitting frames, each one confirmed.
++ *
++ * Every use of the API is bounded by user settings: tokens per reply, tool
++ * calls per question, data per tool result, session and daily token
++ * budgets, requests per minute. Usage is counted from the API's own token
++ * figures; the daily count survives restarts.
++ */
++
++#include <QElapsedTimer>
++#include <QJsonArray>
++#include <QJsonObject>
++#include <QPointer>
++#include <QTimer>
++#include <QVector>
++#include <QWidget>
++#include <vector>
++
++#include "aitools.h"
++#include "canre.h"
++#include "savvycompat.h"
++
++class QComboBox;
++class QLabel;
++class QNetworkAccessManager;
++class QNetworkReply;
++class QPlainTextEdit;
++class QPushButton;
++class QTextBrowser;
++
++class AiAssistantWindow : public QWidget
++{
++    Q_OBJECT
++
++public:
++    AiAssistantWindow(const QVector<GuiFrame> *frames, QWidget *parent = nullptr);
++
++private slots:
++    void sendClicked();
++    void stopClicked();
++    void newConversation();
++    void settingsClicked();
++    void requestNext();
++    void replyFinished();
++    void saveDbc();
++
++private:
++    void loadSettings();
++    void saveUsage();
++    void appendTranscript(const QString &markdown);
++    void finishQuestion(const QString &note = QString());
++    QJsonObject runTool(const QString &id, const QString &name, const QJsonObject &input, bool &stopNow);
++    QString proposeDbc(const QJsonObject &input, bool &error);
++    QString sendFrame(const QJsonObject &input);
++    void updateUsageLabel();
++    QString apiKey() const;
++    void closeDanglingToolUse(const QString &why);
++
++    const QVector<GuiFrame> *frames;
++    canre::Capture cap;
++    aitools::Limits limits;
++    aitools::Budget budget;
++    QString model, endpoint, sessionKey;
++    std::vector<canre::DbcMessage> proposals;
++
++    QJsonArray history;           /* Messages API conversation */
++    int toolCalls = 0;            /* in the current question */
++    bool limitHit = false;
++    bool busy = false;
++    bool captureStale = false;    /* a frame was transmitted since the snapshot */
++    QNetworkAccessManager *nam;
++    QPointer<QNetworkReply> reply;
++    QTimer retryTimer;
++    QElapsedTimer clock;
++    QString transcriptMd;
++
++    QComboBox      *modelCombo;
++    QLabel         *usageLabel;
++    QLabel         *statusLabel;
++    QTextBrowser   *transcript;
++    QPlainTextEdit *input;
++    QPushButton    *sendBtn;
++    QPushButton    *stopBtn;
++    QPlainTextEdit *dbcView;
++};
++
++#endif // AIASSISTANTWINDOW_H
+diff --git a/re/aitools.h b/re/aitools.h
+new file mode 100755
+index 0000000..09099ba
+--- /dev/null
++++ b/re/aitools.h
+@@ -0,0 +1,347 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef AITOOLS_H
++#define AITOOLS_H
++
++/*
++ * Tools the AI assistant can call on the captured frames, and the limits on
++ * its use of the API. Qt free so both are unit tested on the host
++ * (tests/gui/aitools_test.cpp); the window (aiassistantwindow.cpp) only
++ * converts JSON and talks HTTP.
++ *
++ * Every tool returns compact text: tables and summaries rather than raw
++ * dumps, cut to the configured size, because tool results are paid input
++ * tokens.
++ */
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <deque>
++#include <map>
++#include <set>
++#include <string>
++#include <vector>
++
++#include "canre.h"
++
++namespace aitools {
++
++/* ------------------------------------------------------------------ limits */
++
++struct Limits {
++    int    maxOutputTokens = 4096;      /* max_tokens of each request */
++    int    maxToolCalls = 15;           /* per question */
++    int    maxFramesPerResult = 200;    /* get_frames rows, signal_values points */
++    int    maxResultChars = 20000;      /* any single tool result */
++    long   sessionTokenBudget = 500000; /* input + output + cache, 0 = no limit */
++    long   dailyTokenBudget = 2000000;  /* same, per calendar day, 0 = no limit */
++    int    maxRequestsPerMinute = 10;   /* 0 = no limit */
++    bool   allowTransmit = false;       /* offer send_frame at all */
++    std::set<uint32_t> transmitAllowlist; /* empty = any ID (each frame is confirmed anyway) */
++    double priceInputPerMTok = 0;       /* optional cost display, 0 = off */
++    double priceOutputPerMTok = 0;
++};
++
++struct Usage {
++    long input = 0, output = 0, cacheWrite = 0, cacheRead = 0, requests = 0;
++    long total() const { return input + output + cacheWrite + cacheRead; }
++    void add(const Usage &u)
++    {
++        input += u.input; output += u.output; cacheWrite += u.cacheWrite; cacheRead += u.cacheRead; requests += u.requests;
++    }
++};
++
++/* Accounting against the limits. Times are milliseconds on any monotonic
++ * clock, day is any string that changes at midnight (e.g. "2026-10-14"). */
++class Budget {
++public:
++    Usage session, today;
++    std::string day;
++
++    /* Empty if a request may be sent now; otherwise why not. waitMs > 0 means
++     * only the rate limit is in the way and the request may go after that. */
++    std::string check(const Limits &l, long long nowMs, const std::string &d, long estimatedInput, long long &waitMs)
++    {
++        rollDay(d);
++        waitMs = 0;
++        long need = estimatedInput + 1;
++        if (l.sessionTokenBudget > 0 && session.total() + need > l.sessionTokenBudget)
++            return "session token budget used up (" + std::to_string(session.total()) + " of " + std::to_string(l.sessionTokenBudget) + ")";
++        if (l.dailyTokenBudget > 0 && today.total() + need > l.dailyTokenBudget)
++            return "daily token budget used up (" + std::to_string(today.total()) + " of " + std::to_string(l.dailyTokenBudget) + ")";
++        while (!stamps.empty() && nowMs - stamps.front() >= 60000)
++            stamps.pop_front();
++        if (l.maxRequestsPerMinute > 0 && int(stamps.size()) >= l.maxRequestsPerMinute)
++        {
++            waitMs = 60000 - (nowMs - stamps.front());
++            return "rate limit: " + std::to_string(l.maxRequestsPerMinute) + " requests per minute";
++        }
++        return std::string();
++    }
++
++    /* max_tokens for the next request: the configured maximum, but never
++     * more than what is left of the budgets after the estimated input */
++    int maxTokens(const Limits &l, long estimatedInput) const
++    {
++        long m = l.maxOutputTokens;
++        if (l.sessionTokenBudget > 0) m = std::min(m, l.sessionTokenBudget - session.total() - estimatedInput);
++        if (l.dailyTokenBudget > 0) m = std::min(m, l.dailyTokenBudget - today.total() - estimatedInput);
++        return int(std::max(0L, m));
++    }
++
++    void requestSent(long long nowMs) { stamps.push_back(nowMs); }
++
++    void addUsage(const std::string &d, const Usage &u)
++    {
++        rollDay(d);
++        session.add(u);
++        today.add(u);
++    }
++
++    double cost(const Limits &l, const Usage &u) const
++    {
++        /* cache writes cost 1.25x input, cache reads 0.1x (Anthropic pricing rules) */
++        return (u.input + 1.25 * u.cacheWrite + 0.1 * u.cacheRead) * l.priceInputPerMTok / 1e6 + u.output * l.priceOutputPerMTok / 1e6;
++    }
++
++private:
++    std::deque<long long> stamps;
++    void rollDay(const std::string &d)
++    {
++        if (d != day) { day = d; today = Usage(); }
++    }
++};
++
++/* Rough input estimate for the budget check before a request: 4 characters
++ * per token is typical for English text and JSON. */
++inline long estimateTokens(size_t chars) { return long(chars / 4 + 1); }
++
++/* ------------------------------------------------------------------- tools */
++
++struct Args {
++    std::map<std::string, std::string> str;
++    std::map<std::string, double> num;
++    std::map<std::string, bool> flag;
++
++    bool has(const std::string &k) const { return str.count(k) || num.count(k) || flag.count(k); }
++    double n(const std::string &k, double def) const { auto it = num.find(k); return it == num.end() ? def : it->second; }
++    std::string s(const std::string &k, const std::string &def = "") const { auto it = str.find(k); return it == str.end() ? def : it->second; }
++    bool b(const std::string &k, bool def) const { auto it = flag.find(k); return it == flag.end() ? def : it->second; }
++};
++
++/* JSON tool definitions for the Messages API (the "tools" array members). */
++inline std::string toolDefinitions(const Limits &l)
++{
++    std::string t = R"([
++{"name":"capture_overview","description":"Size of the capture: frame count, time span in seconds (times are relative to the first frame), buses, number of distinct IDs.","input_schema":{"type":"object","properties":{}}},
++{"name":"list_ids","description":"One line per CAN ID: bus, count, mean period and jitter in ms, lengths, number of bytes that change, distinct payloads. IDs are hex.","input_schema":{"type":"object","properties":{"bus":{"type":"integer","description":"only this bus"},"sort":{"type":"string","enum":["id","count","changing"]},"limit":{"type":"integer","description":"max lines, default 100"}}}},
++{"name":"analyze_id","description":"Statistics of one ID: per byte min/max/distinct/changes/entropy, bit flip rate per bit, and detected fields: rolling counters, checksums (XOR, SUM, CRC-8 J1850/AUTOSAR), constants, flags, and signal candidates segmented by bit flip rates with byte order. Start bits follow DBC: Intel = LSB position, Motorola = MSB position, position = byte*8 + bit.","input_schema":{"type":"object","properties":{"id":{"type":"string","description":"hex, e.g. \"1A3\" or \"18FEF100\""},"bus":{"type":"integer"},"start_s":{"type":"number"},"end_s":{"type":"number"}},"required":["id"]}},
++{"name":"get_frames","description":"Raw frames of one ID: time in s and data bytes in hex. Prefer analyze_id and signal_values; use this to look at a few concrete frames.","input_schema":{"type":"object","properties":{"id":{"type":"string"},"bus":{"type":"integer"},"start_s":{"type":"number"},"end_s":{"type":"number"},"limit":{"type":"integer"}},"required":["id"]}},
++{"name":"signal_values","description":"Decode a bit field of one ID over time: statistics and an evenly downsampled list of (time s, value). Value = raw * factor + offset.","input_schema":{"type":"object","properties":{"id":{"type":"string"},"bus":{"type":"integer"},"start_bit":{"type":"integer"},"length":{"type":"integer"},"byte_order":{"type":"string","enum":["intel","motorola"]},"signed":{"type":"boolean"},"factor":{"type":"number"},"offset":{"type":"number"},"start_s":{"type":"number"},"end_s":{"type":"number"},"max_points":{"type":"integer"}},"required":["id","start_bit","length","byte_order"]}},
++{"name":"compare_windows","description":"What differs between time window A and B: IDs present in only one, changed frame rates, and the bits whose level or toggling differs most (a switch or state shows as a steady bit at a different level).","input_schema":{"type":"object","properties":{"a_start":{"type":"number"},"a_end":{"type":"number"},"b_start":{"type":"number"},"b_end":{"type":"number"},"max_bits":{"type":"integer"}},"required":["a_start","a_end","b_start","b_end"]}},
++{"name":"changes_around","description":"compare_windows for the seconds before and after a moment, e.g. when the user pressed a button.","input_schema":{"type":"object","properties":{"time_s":{"type":"number"},"before_s":{"type":"number"},"after_s":{"type":"number"}},"required":["time_s"]}},
++{"name":"propose_dbc","description":"Offer decoded messages and signals to the user as a DBC proposal. Nothing is applied automatically; the user reviews and saves it. Use DBC start bit conventions as in analyze_id.","input_schema":{"type":"object","properties":{"messages":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"length":{"type":"integer"},"signals":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"start_bit":{"type":"integer"},"length":{"type":"integer"},"byte_order":{"type":"string","enum":["intel","motorola"]},"signed":{"type":"boolean"},"factor":{"type":"number"},"offset":{"type":"number"},"min":{"type":"number"},"max":{"type":"number"},"unit":{"type":"string"},"comment":{"type":"string"}},"required":["name","start_bit","length","byte_order"]}}},"required":["id","name","signals"]}}},"required":["messages"]}})";
++    if (l.allowTransmit)
++        t += R"(,
++{"name":"send_frame","description":"Transmit one CAN frame on the bus to probe a reaction. The user must confirm every frame and may refuse; explain why you send it. Only when observing alone is not enough.","input_schema":{"type":"object","properties":{"bus":{"type":"integer"},"id":{"type":"string"},"extended":{"type":"boolean"},"data":{"type":"string","description":"hex bytes, e.g. \"01 02 FF\""},"reason":{"type":"string"}},"required":["bus","id","data","reason"]}})";
++    t += "\n]";
++    return t;
++}
++
++inline std::string systemPrompt()
++{
++    return "You are a CAN bus reverse engineering assistant inside SavvyCAN, a CAN analyzer. The user captured CAN traffic "
++           "and wants to understand it: which IDs carry what, where counters, checksums and physical signals sit, what "
++           "changes when they do something, and finally a DBC description.\n"
++           "Work with the tools, they read the user's capture. Times are seconds from the first frame; IDs are hex; "
++           "bit positions follow DBC (position = byte*8 + bit, Intel start = LSB, Motorola start = MSB). Start broad "
++           "(capture_overview, list_ids), then analyze_id on interesting IDs, signal_values to check a hypothesis, "
++           "compare_windows / changes_around when the user tells you when they did something. Tool results are "
++           "limited in size; ask for narrower ranges rather than everything. Say how sure you are; a hypothesis is "
++           "not a fact until a signal behaves as expected. Offer findings with propose_dbc when they are solid. "
++           "Transmitting frames can affect real equipment: only propose it when needed and explain why.";
++}
++
++/* Hex CAN ID, with or without 0x; returns false if not a valid ID. */
++inline bool parseId(const std::string &text, uint32_t &id)
++{
++    std::string t = text;
++    if (t.size() > 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X')) t = t.substr(2);
++    if (t.empty() || t.size() > 8) return false;
++    uint32_t v = 0;
++    for (char c : t)
++    {
++        int d;
++        if (c >= '0' && c <= '9') d = c - '0';
++        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
++        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
++        else return false;
++        v = v * 16 + uint32_t(d);
++    }
++    if (v > 0x1FFFFFFF) return false;
++    id = v;
++    return true;
++}
++
++/* The capture's key for an ID (and optional bus): prefers an exact bus match,
++ * then the ID on any bus; extended if the ID was seen as extended. */
++inline bool findKey(const std::vector<canre::IdInfo> &ids, uint32_t id, int bus, canre::FrameKey &out)
++{
++    for (const canre::IdInfo &i : ids)
++        if (i.key.id == id && (bus < 0 || i.key.bus == bus)) { out = i.key; return true; }
++    return false;
++}
++
++inline std::string cut(const std::string &s, const Limits &l)
++{
++    if (int(s.size()) <= l.maxResultChars) return s;
++    return s.substr(0, size_t(l.maxResultChars)) + "\n[cut at " + std::to_string(l.maxResultChars) +
++           " characters by the user's limit; ask for a narrower range]";
++}
++
++struct Result {
++    std::string text;
++    bool        error = false;
++};
++
++/* Runs a data tool. propose_dbc and send_frame need the user interface and
++ * are handled by the window; for them this returns an error. */
++inline Result run(const std::string &name, const Args &a, const canre::Capture &cap, const Limits &l)
++{
++    char line[256];
++    std::vector<canre::IdInfo> ids = canre::listIds(cap);
++    Result r;
++    auto keyFor = [&](canre::FrameKey &k) -> bool {
++        uint32_t id;
++        if (!parseId(a.s("id"), id)) { r = { "invalid id '" + a.s("id") + "', expected hex such as 1A3", true }; return false; }
++        if (!findKey(ids, id, int(a.n("bus", -1)), k)) { r = { "ID " + a.s("id") + " is not in the capture", true }; return false; }
++        return true;
++    };
++    double t0 = a.n("start_s", -1), t1 = a.n("end_s", -1);
++
++    if (name == "capture_overview")
++    {
++        std::set<int> buses;
++        for (const canre::IdInfo &i : ids) buses.insert(i.key.bus);
++        std::string b;
++        for (int x : buses) b += (b.empty() ? "" : ", ") + std::to_string(x);
++        snprintf(line, sizeof(line), "%zu frames over %.3f s, %zu distinct IDs, buses: %s\n", cap.size(), cap.spanSeconds(), ids.size(),
++                 b.empty() ? "-" : b.c_str());
++        r.text = line;
++    }
++    else if (name == "list_ids")
++    {
++        int bus = int(a.n("bus", -1));
++        std::string sort = a.s("sort", "id");
++        std::vector<canre::IdInfo> v;
++        for (const canre::IdInfo &i : ids) if (bus < 0 || i.key.bus == bus) v.push_back(i);
++        if (sort == "count") std::stable_sort(v.begin(), v.end(), [](const canre::IdInfo &x, const canre::IdInfo &y) { return x.count > y.count; });
++        if (sort == "changing") std::stable_sort(v.begin(), v.end(), [](const canre::IdInfo &x, const canre::IdInfo &y) { return x.changingBytes > y.changingBytes; });
++        size_t limit = size_t(std::max(1.0, a.n("limit", 100)));
++        r.text = "id        bus  count  period_ms  jitter_ms  len  changing_bytes  distinct_payloads\n";
++        for (size_t i = 0; i < v.size() && i < limit; i++)
++        {
++            std::string lens;
++            for (uint8_t x : v[i].lengths) lens += (lens.empty() ? "" : "/") + std::to_string(x);
++            snprintf(line, sizeof(line), "%-9s %3d %6zu %10.1f %10.1f  %-4s %14d %18d\n", canre::keyText(v[i].key).c_str(), v[i].key.bus,
++                     v[i].count, v[i].periodMs, v[i].jitterMs, lens.c_str(), v[i].changingBytes, v[i].uniquePayloads);
++            r.text += line;
++        }
++        if (v.size() > limit) r.text += std::to_string(v.size() - limit) + " more IDs not listed\n";
++    }
++    else if (name == "analyze_id")
++    {
++        canre::FrameKey k;
++        if (!keyFor(k)) return r;
++        r.text = canre::describe(canre::analyzeId(cap, k, t0, t1));
++    }
++    else if (name == "get_frames")
++    {
++        canre::FrameKey k;
++        if (!keyFor(k)) return r;
++        std::vector<size_t> idx = cap.indices(k, t0, t1);
++        size_t limit = size_t(std::min<double>(a.n("limit", 50), l.maxFramesPerResult));
++        snprintf(line, sizeof(line), "%zu frames of %s in range, showing %zu\n", idx.size(), canre::keyText(k).c_str(), std::min(limit, idx.size()));
++        r.text = line;
++        for (size_t j = 0; j < idx.size() && j < limit; j++)
++        {
++            snprintf(line, sizeof(line), "%10.4f ", cap.seconds(idx[j]));
++            r.text += line;
++            const uint8_t *d = cap.data(idx[j]);
++            for (int b = 0; b < cap.frame(idx[j]).len; b++)
++            {
++                snprintf(line, sizeof(line), "%02X%s", d[b], b + 1 < cap.frame(idx[j]).len ? " " : "");
++                r.text += line;
++            }
++            r.text += "\n";
++        }
++    }
++    else if (name == "signal_values")
++    {
++        canre::FrameKey k;
++        if (!keyFor(k)) return r;
++        int start = int(a.n("start_bit", 0)), len = int(a.n("length", 8));
++        bool motorola = a.s("byte_order", "intel") == "motorola", sgn = a.b("signed", false);
++        double factor = a.n("factor", 1), offset = a.n("offset", 0);
++        if (len < 1 || len > 64) return { "length must be 1..64", true };
++        std::vector<size_t> idx = cap.indices(k, t0, t1);
++        std::vector<std::pair<double, double>> pts;
++        for (size_t i : idx)
++        {
++            bool ok;
++            uint64_t raw = canre::extractBits(cap.data(i), cap.frame(i).len, start, len, motorola, &ok);
++            if (!ok) continue;
++            double v;
++            if (sgn && len < 64 && (raw & (uint64_t(1) << (len - 1)))) v = double(int64_t(raw) - int64_t(uint64_t(1) << len));
++            else v = double(raw);
++            pts.push_back({ cap.seconds(i), v * factor + offset });
++        }
++        if (pts.empty()) return { "no frame of " + canre::keyText(k) + " holds that bit field in the range", true };
++        double mn = pts[0].second, mx = mn, sum = 0;
++        size_t changes = 0;
++        std::set<double> distinct;
++        for (size_t i = 0; i < pts.size(); i++)
++        {
++            mn = std::min(mn, pts[i].second); mx = std::max(mx, pts[i].second); sum += pts[i].second;
++            if (i && pts[i].second != pts[i - 1].second) changes++;
++            if (distinct.size() < 1000) distinct.insert(pts[i].second);
++        }
++        snprintf(line, sizeof(line), "%zu values, min %g max %g mean %g, %zu changes, %s%zu distinct\n", pts.size(), mn, mx, sum / pts.size(),
++                 changes, distinct.size() >= 1000 ? ">= " : "", distinct.size());
++        r.text = line;
++        size_t maxp = size_t(std::max(2.0, std::min<double>(a.n("max_points", 60), l.maxFramesPerResult)));
++        size_t step = std::max<size_t>(1, (pts.size() + maxp - 1) / maxp);
++        r.text += "time_s value\n";
++        for (size_t i = 0; i < pts.size(); i += step)
++        {
++            snprintf(line, sizeof(line), "%.3f %g\n", pts[i].first, pts[i].second);
++            r.text += line;
++        }
++    }
++    else if (name == "compare_windows" || name == "changes_around")
++    {
++        double a0, a1, b0, b1;
++        if (name == "changes_around")
++        {
++            double t = a.n("time_s", 0), before = a.n("before_s", 2), after = a.n("after_s", 2);
++            a0 = std::max(0.0, t - before); a1 = t; b0 = t; b1 = t + after;
++        }
++        else
++        {
++            a0 = a.n("a_start", 0); a1 = a.n("a_end", 0); b0 = a.n("b_start", 0); b1 = a.n("b_end", 0);
++        }
++        if (a1 <= a0 || b1 <= b0) return { "each window needs start < end", true };
++        snprintf(line, sizeof(line), "window A %.3f..%.3f s, window B %.3f..%.3f s\n", a0, a1, b0, b1);
++        r.text = line + canre::describe(canre::diffWindows(cap, a0, a1, b0, b1, size_t(std::max(1.0, a.n("max_bits", 30)))));
++    }
++    else
++        return { "unknown tool " + name, true };
++    r.text = cut(r.text, l);
++    return r;
++}
++
++} // namespace aitools
++
++#endif // AITOOLS_H
 diff --git a/re/busstatswindow.cpp b/re/busstatswindow.cpp
 new file mode 100755
 index 0000000..f924341
@@ -4897,6 +6105,719 @@ index 0000000..3fc3f2b
 +};
 +
 +#endif // CANOPENWINDOW_H
+diff --git a/re/canre.h b/re/canre.h
+new file mode 100755
+index 0000000..eefd2fe
+--- /dev/null
++++ b/re/canre.h
+@@ -0,0 +1,707 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef CANRE_H
++#define CANRE_H
++
++/*
++ * CAN reverse engineering analysis, header only and Qt free so it is unit
++ * tested on the host (tests/gui/canre_test.cpp). Used by the Signal Finder
++ * window and as the tools of the AI assistant.
++ *
++ *   canre::Capture cap;  cap.add(us, bus, id, ext, len, data); ...
++ *   auto ids = canre::listIds(cap);
++ *   canre::IdAnalysis a = canre::analyzeId(cap, key);   // counters, checksums, signals
++ *   auto d = canre::diffWindows(cap, a0, a1, b0, b1);   // what changed between two time ranges
++ *   std::string dbc = canre::toDbc(messages);
++ *
++ * Bit numbering: "bit k of byte b" is the usual (k = 0 is the LSB). Signal
++ * positions use DBC conventions: an Intel (little endian) signal starts at
++ * its LSB, a Motorola (big endian) signal at its MSB, both as b * 8 + k.
++ */
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <map>
++#include <set>
++#include <string>
++#include <vector>
++
++namespace canre {
++
++/* ------------------------------------------------------------------ capture */
++
++struct FrameKey {
++    uint8_t  bus = 0;
++    bool     ext = false;
++    uint32_t id = 0;
++    bool operator<(const FrameKey &o) const
++    {
++        if (bus != o.bus) return bus < o.bus;
++        if (ext != o.ext) return ext < o.ext;
++        return id < o.id;
++    }
++    bool operator==(const FrameKey &o) const { return bus == o.bus && ext == o.ext && id == o.id; }
++};
++
++inline std::string keyText(const FrameKey &k)
++{
++    char b[32];
++    snprintf(b, sizeof(b), k.ext ? "%08X" : "%03X", k.id);
++    return std::string(b) + (k.bus ? "@" + std::to_string(k.bus) : std::string());
++}
++
++/* Compact copy of a frame list: 24 bytes per frame plus its data. */
++class Capture {
++public:
++    struct Frame {
++        uint64_t us;
++        uint32_t id;
++        uint32_t off;
++        uint8_t  bus, len;
++        bool     ext;
++    };
++
++    void add(uint64_t us, uint8_t bus, uint32_t id, bool ext, uint8_t len, const uint8_t *data)
++    {
++        if (len > 64) len = 64;
++        Frame f{ us, id, uint32_t(pool.size()), bus, len, ext };
++        pool.insert(pool.end(), data, data + len);
++        frames.push_back(f);
++    }
++    size_t size() const { return frames.size(); }
++    const Frame &frame(size_t i) const { return frames[i]; }
++    const uint8_t *data(size_t i) const { return pool.data() + frames[i].off; }
++    FrameKey key(size_t i) const { FrameKey k; k.bus = frames[i].bus; k.ext = frames[i].ext; k.id = frames[i].id; return k; }
++    uint64_t startUs() const { return frames.empty() ? 0 : frames.front().us; }
++    double seconds(size_t i) const { return (frames[i].us - startUs()) / 1e6; }
++    double spanSeconds() const { return frames.empty() ? 0 : (frames.back().us - startUs()) / 1e6; }
++
++    /* frame indices of one ID, optionally limited to [t0, t1] seconds */
++    std::vector<size_t> indices(const FrameKey &k, double t0 = -1, double t1 = -1) const
++    {
++        std::vector<size_t> out;
++        for (size_t i = 0; i < frames.size(); i++)
++        {
++            if (!(key(i) == k)) continue;
++            double t = seconds(i);
++            if (t0 >= 0 && t < t0) continue;
++            if (t1 >= 0 && t > t1) continue;
++            out.push_back(i);
++        }
++        return out;
++    }
++
++private:
++    std::vector<Frame> frames;
++    std::vector<uint8_t> pool;
++};
++
++/* ------------------------------------------------------------ ID overview */
++
++struct IdInfo {
++    FrameKey key;
++    size_t   count = 0;
++    double   firstS = 0, lastS = 0;
++    double   periodMs = 0;        /* mean interval */
++    double   jitterMs = 0;        /* standard deviation of the interval */
++    std::set<uint8_t> lengths;
++    int      changingBytes = 0;   /* bytes that took more than one value */
++    int      uniquePayloads = 0;  /* capped at 1000 */
++};
++
++inline std::vector<IdInfo> listIds(const Capture &c)
++{
++    struct Acc {
++        IdInfo info;
++        double lastT = -1, sum = 0, sum2 = 0;
++        size_t intervals = 0;
++        uint8_t first[64]; uint8_t firstLen = 0; bool haveFirst = false;
++        uint64_t changedMask = 0;
++        std::set<std::string> payloads;
++    };
++    std::map<FrameKey, Acc> m;
++    for (size_t i = 0; i < c.size(); i++)
++    {
++        Acc &a = m[c.key(i)];
++        const Capture::Frame &f = c.frame(i);
++        double t = c.seconds(i);
++        if (a.info.count == 0) { a.info.key = c.key(i); a.info.firstS = t; }
++        a.info.count++;
++        a.info.lastS = t;
++        a.info.lengths.insert(f.len);
++        if (a.lastT >= 0)
++        {
++            double d = (t - a.lastT) * 1000.0;
++            a.sum += d; a.sum2 += d * d; a.intervals++;
++        }
++        a.lastT = t;
++        const uint8_t *d = c.data(i);
++        if (!a.haveFirst) { memcpy(a.first, d, f.len); a.firstLen = f.len; a.haveFirst = true; }
++        for (int b = 0; b < f.len && b < 64; b++)
++            if (b >= a.firstLen || d[b] != a.first[b])
++                a.changedMask |= uint64_t(1) << b;
++        if (a.payloads.size() < 1000)
++            a.payloads.insert(std::string(reinterpret_cast<const char *>(d), f.len));
++    }
++    std::vector<IdInfo> out;
++    for (auto &kv : m)
++    {
++        Acc &a = kv.second;
++        if (a.intervals)
++        {
++            a.info.periodMs = a.sum / double(a.intervals);
++            double var = a.sum2 / double(a.intervals) - a.info.periodMs * a.info.periodMs;
++            a.info.jitterMs = var > 0 ? std::sqrt(var) : 0;
++        }
++        int n = 0;
++        for (int b = 0; b < 64; b++) if (a.changedMask & (uint64_t(1) << b)) n++;
++        a.info.changingBytes = n;
++        a.info.uniquePayloads = int(a.payloads.size());
++        out.push_back(a.info);
++    }
++    return out;
++}
++
++/* --------------------------------------------------------- per ID analysis */
++
++struct ByteStat {
++    int    minV = 255, maxV = 0, unique = 0, changes = 0;
++    double entropy = 0;           /* bits */
++};
++
++enum class FieldKind { Constant, Counter, Checksum, Signal, Flag };
++
++inline const char *kindName(FieldKind k)
++{
++    switch (k)
++    {
++    case FieldKind::Constant: return "constant";
++    case FieldKind::Counter:  return "counter";
++    case FieldKind::Checksum: return "checksum";
++    case FieldKind::Flag:     return "flag";
++    default:                  return "signal";
++    }
++}
++
++struct Field {
++    FieldKind   kind = FieldKind::Signal;
++    int         startBit = 0;     /* DBC start bit (Intel: LSB, Motorola: MSB) */
++    int         length = 1;
++    bool        bigEndian = false;
++    bool        isSigned = false;
++    uint64_t    minRaw = 0, maxRaw = 0;
++    int         unique = 0;
++    std::string note;             /* e.g. "+1 per frame, wraps at 15", "XOR of bytes 0..6" */
++};
++
++struct IdAnalysis {
++    FrameKey key;
++    size_t   frames = 0;
++    int      length = 0;          /* most common length */
++    std::vector<ByteStat> bytes;
++    std::vector<double>   flipRate;   /* per bit, index b * 8 + k, flips / (frames - 1) */
++    std::vector<double>   oneRate;    /* fraction of frames with the bit set */
++    std::vector<Field>    fields;
++};
++
++/* Raw value of a bit field. Intel: start = LSB position, bits go up.
++ * Motorola: start = MSB position, then down within the byte and on to the
++ * next byte's bit 7 (DBC convention). */
++inline uint64_t extractBits(const uint8_t *d, int len, int start, int length, bool bigEndian, bool *ok = nullptr)
++{
++    uint64_t v = 0;
++    if (ok) *ok = true;
++    if (length < 1 || length > 64) { if (ok) *ok = false; return 0; }
++    if (!bigEndian)
++    {
++        for (int i = 0; i < length; i++)
++        {
++            int pos = start + i;
++            if (pos / 8 >= len) { if (ok) *ok = false; return 0; }
++            if (d[pos / 8] & (1u << (pos % 8))) v |= uint64_t(1) << i;
++        }
++        return v;
++    }
++    int pos = start;
++    for (int i = 0; i < length; i++)
++    {
++        if (pos / 8 >= len || pos < 0) { if (ok) *ok = false; return 0; }
++        v = (v << 1) | ((d[pos / 8] >> (pos % 8)) & 1u);
++        if (pos % 8 == 0) pos += 15;     /* next byte, bit 7 */
++        else pos--;
++    }
++    return v;
++}
++
++/* Motorola start bit (MSB) of a field whose LSB is at lsbPos and that is
++ * `length` bits long. */
++inline int motorolaStartFromLsb(int lsbPos, int length)
++{
++    int pos = lsbPos;
++    for (int i = 1; i < length; i++)
++    {
++        if (pos % 8 == 7) pos -= 15;     /* previous byte, bit 0 */
++        else pos++;
++    }
++    return pos;
++}
++
++namespace detail {
++
++inline uint8_t crc8(const uint8_t *p, int n, uint8_t poly, uint8_t init, uint8_t xorOut)
++{
++    uint8_t c = init;
++    for (int i = 0; i < n; i++)
++    {
++        c ^= p[i];
++        for (int b = 0; b < 8; b++)
++            c = (c & 0x80) ? uint8_t((c << 1) ^ poly) : uint8_t(c << 1);
++    }
++    return uint8_t(c ^ xorOut);
++}
++
++struct Series {
++    std::vector<const uint8_t *> d;
++    int len = 0;
++};
++
++/* fraction of steps where (v[i] - v[i-1]) mod 2^bits == step */
++inline double counterScore(const std::vector<uint64_t> &v, int bits, uint64_t &stepOut)
++{
++    if (v.size() < 8) return 0;
++    uint64_t mod = uint64_t(1) << bits;
++    std::map<uint64_t, size_t> steps;
++    for (size_t i = 1; i < v.size(); i++)
++        steps[(v[i] - v[i - 1]) & (mod - 1)]++;
++    auto best = std::max_element(steps.begin(), steps.end(),
++                                 [](const std::pair<const uint64_t, size_t> &a, const std::pair<const uint64_t, size_t> &b) { return a.second < b.second; });
++    stepOut = best->first;
++    if (stepOut == 0) return 0;
++    return double(best->second) / double(v.size() - 1);
++}
++
++} // namespace detail
++
++inline IdAnalysis analyzeId(const Capture &c, const FrameKey &key, double t0 = -1, double t1 = -1)
++{
++    IdAnalysis a;
++    a.key = key;
++    std::vector<size_t> idx = c.indices(key, t0, t1);
++    std::map<int, size_t> lens;
++    for (size_t i : idx) lens[c.frame(i).len]++;
++    if (idx.empty()) return a;
++    a.length = std::max_element(lens.begin(), lens.end(),
++                                [](const std::pair<const int, size_t> &x, const std::pair<const int, size_t> &y) { return x.second < y.second; })->first;
++    detail::Series s;
++    s.len = a.length;
++    for (size_t i : idx)
++        if (c.frame(i).len == a.length)
++            s.d.push_back(c.data(i));
++    a.frames = s.d.size();
++    const int L = a.length, n = int(s.d.size());
++
++    /* byte and bit statistics */
++    a.bytes.resize(size_t(L));
++    a.flipRate.assign(size_t(L * 8), 0.0);
++    a.oneRate.assign(size_t(L * 8), 0.0);
++    for (int b = 0; b < L; b++)
++    {
++        size_t hist[256] = { 0 };
++        ByteStat &st = a.bytes[size_t(b)];
++        for (int i = 0; i < n; i++)
++        {
++            uint8_t v = s.d[size_t(i)][b];
++            hist[v]++;
++            st.minV = std::min(st.minV, int(v));
++            st.maxV = std::max(st.maxV, int(v));
++            if (i && v != s.d[size_t(i - 1)][b]) st.changes++;
++            for (int k = 0; k < 8; k++)
++            {
++                if (v & (1u << k)) a.oneRate[size_t(b * 8 + k)] += 1;
++                if (i && ((v ^ s.d[size_t(i - 1)][b]) & (1u << k))) a.flipRate[size_t(b * 8 + k)] += 1;
++            }
++        }
++        for (int v = 0; v < 256; v++)
++            if (hist[v])
++            {
++                st.unique++;
++                double p = double(hist[v]) / n;
++                st.entropy -= p * std::log2(p);
++            }
++    }
++    for (size_t i = 0; i < a.flipRate.size(); i++)
++    {
++        a.flipRate[i] = n > 1 ? a.flipRate[i] / (n - 1) : 0;
++        a.oneRate[i] /= n;
++    }
++
++    std::vector<bool> used(size_t(L * 8), false);
++    auto markUsed = [&](int lsbPos, int length) {   /* Intel style bit range */
++        for (int i = 0; i < length; i++) if (lsbPos + i < L * 8) used[size_t(lsbPos + i)] = true;
++    };
++    auto rangeFree = [&](int lsbPos, int length) {
++        for (int i = 0; i < length; i++) if (lsbPos + i >= L * 8 || used[size_t(lsbPos + i)]) return false;
++        return true;
++    };
++
++    /* counters: byte, nibbles and 2..3 bit fields inside a byte, Intel order,
++     * stepping by +1 (mod 2^bits) in at least 90 % of frames. The best
++     * scoring field wins, the wider one on a tie (the low nibble of a byte
++     * counter counts too); a byte may hold more than one counter. */
++    if (n >= 8)
++        for (int b = 0; b < L; b++)
++            for (;;)
++            {
++                const int cand[][2] = { { 0, 8 }, { 0, 4 }, { 4, 4 }, { 0, 3 }, { 4, 3 }, { 0, 2 }, { 2, 2 }, { 4, 2 }, { 6, 2 } };
++                double bestScore = 0;
++                int bestLsb = -1, bestLen = 0;
++                for (const auto &cd : cand)
++                {
++                    int lsb = b * 8 + cd[0], len = cd[1];
++                    if (!rangeFree(lsb, len)) continue;
++                    std::vector<uint64_t> v;
++                    for (int i = 0; i < n; i++) v.push_back(extractBits(s.d[size_t(i)], L, lsb, len, false));
++                    uint64_t step;
++                    double sc = detail::counterScore(v, len, step);
++                    std::set<uint64_t> distinct(v.begin(), v.end());
++                    if (step != 1 || sc < 0.9 || distinct.size() < std::min<size_t>(4, size_t(1) << len)) continue;
++                    if (sc > bestScore + 1e-9 || (std::fabs(sc - bestScore) <= 1e-9 && len > bestLen))
++                    {
++                        bestScore = sc; bestLsb = lsb; bestLen = len;
++                    }
++                }
++                if (bestLsb < 0) break;
++                Field f;
++                f.kind = FieldKind::Counter;
++                f.startBit = bestLsb; f.length = bestLen;
++                std::set<uint64_t> distinct;
++                for (int i = 0; i < n; i++) distinct.insert(extractBits(s.d[size_t(i)], L, bestLsb, bestLen, false));
++                f.minRaw = *distinct.begin(); f.maxRaw = *distinct.rbegin(); f.unique = int(distinct.size());
++                char note[96];
++                snprintf(note, sizeof(note), "+1 per frame in %.0f %% of frames, %d bits", bestScore * 100, bestLen);
++                f.note = note;
++                a.fields.push_back(f);
++                markUsed(bestLsb, bestLen);
++            }
++
++    /* checksums, after the counters (a counter byte would also pass as the SUM
++     * of a checksum byte): a byte equal to f(other bytes) [+ constant] in
++     * >= 98 % of frames */
++    bool checksumFound = false;
++    if (n >= 8 && L >= 2)
++        for (int cb = L - 1; cb >= 0 && !checksumFound; cb--)       /* usually the last byte; an XOR relation */
++        {                                                            /* would match every byte in it, so stop at one */
++            if (a.bytes[size_t(cb)].unique < 3 || !rangeFree(cb * 8, 8)) continue;
++            struct Algo { const char *name; int type; };
++            const Algo algos[] = { { "XOR", 0 }, { "SUM", 1 }, { "CRC-8 SAE J1850", 2 }, { "CRC-8 AUTOSAR (0x2F)", 3 } };
++            for (const Algo &al : algos)
++            {
++                std::map<int, int> offsets;
++                for (int i = 0; i < n; i++)
++                {
++                    uint8_t other[64]; int m = 0;
++                    for (int b = 0; b < L; b++) if (b != cb) other[m++] = s.d[size_t(i)][b];
++                    uint8_t f = 0;
++                    if (al.type == 0) for (int b = 0; b < m; b++) f ^= other[b];
++                    else if (al.type == 1) for (int b = 0; b < m; b++) f = uint8_t(f + other[b]);
++                    else if (al.type == 2) f = detail::crc8(other, m, 0x1D, 0xFF, 0xFF);
++                    else f = detail::crc8(other, m, 0x2F, 0xFF, 0xFF);
++                    int off = al.type <= 1 ? (al.type == 0 ? (s.d[size_t(i)][cb] ^ f) : uint8_t(s.d[size_t(i)][cb] - f))
++                                           : (s.d[size_t(i)][cb] ^ f);
++                    offsets[off]++;
++                }
++                auto best = std::max_element(offsets.begin(), offsets.end(),
++                                             [](const std::pair<const int, int> &x, const std::pair<const int, int> &y) { return x.second < y.second; });
++                if (best->second >= int(0.98 * n))
++                {
++                    Field f;
++                    f.kind = FieldKind::Checksum;
++                    f.startBit = cb * 8; f.length = 8; f.bigEndian = false;
++                    f.minRaw = uint64_t(a.bytes[size_t(cb)].minV); f.maxRaw = uint64_t(a.bytes[size_t(cb)].maxV);
++                    f.unique = a.bytes[size_t(cb)].unique;
++                    char note[96];
++                    if (best->first)
++                        snprintf(note, sizeof(note), "%s of the other bytes %s 0x%02X", al.name, al.type == 1 ? "+" : "^", best->first);
++                    else
++                        snprintf(note, sizeof(note), "%s of the other bytes", al.name);
++                    f.note = note;
++                    a.fields.push_back(f);
++                    markUsed(cb * 8, 8);
++                    checksumFound = true;
++                    break;
++                }
++            }
++        }
++
++    /* remaining bits: flags and signal segments. Segmentation after READ
++     * (Marchetti, Stabili 2018): inside a signal the bit flip rate rises from
++     * the MSB to the LSB, so a boundary sits where it drops by an order of
++     * magnitude. The walk is done twice, MSB first across the bytes in
++     * Motorola order (byte 0 first) and in Intel order (last byte first);
++     * a multi-byte field is taken from whichever order makes it longer. */
++    auto mag = [&](int pos) { double r = a.flipRate[size_t(pos)]; return r <= 0 ? -99 : int(std::floor(std::log10(r))); };
++    auto segment = [&](bool intel) {
++        std::vector<std::vector<int>> segs;
++        std::vector<int> cur;
++        for (int bi = 0; bi < L; bi++)
++        {
++            int b = intel ? L - 1 - bi : bi;
++            for (int k = 7; k >= 0; k--)
++            {
++                int pos = b * 8 + k;
++                if (used[size_t(pos)] || a.flipRate[size_t(pos)] == 0)
++                {
++                    if (!cur.empty()) { segs.push_back(cur); cur.clear(); }
++                    continue;
++                }
++                if (!cur.empty() && mag(pos) < mag(cur.back()))
++                {
++                    segs.push_back(cur);
++                    cur.clear();
++                }
++                cur.push_back(pos);
++            }
++        }
++        if (!cur.empty()) segs.push_back(cur);
++        return segs;
++    };
++    struct Seg { std::vector<int> bits; bool intel; };
++    std::vector<Seg> multi;
++    for (int o = 0; o < 2; o++)
++        for (const std::vector<int> &sg : segment(o == 1))
++            if (sg.front() / 8 != sg.back() / 8)
++                multi.push_back({ sg, o == 1 });
++    std::sort(multi.begin(), multi.end(), [](const Seg &x, const Seg &y) { return x.bits.size() > y.bits.size(); });
++
++    auto addField = [&](const std::vector<int> &bits, bool intel) {
++        Field f;
++        f.length = int(bits.size());
++        /* bits are listed MSB first; for one byte both orders read the same */
++        int msb = bits.front(), lsb = bits.back();
++        bool multiByte = msb / 8 != lsb / 8;
++        f.bigEndian = multiByte && !intel;
++        f.startBit = f.bigEndian ? msb : lsb;
++        std::set<uint64_t> distinct;
++        uint64_t mn = UINT64_MAX, mx = 0;
++        for (int i = 0; i < n; i++)
++        {
++            uint64_t v = extractBits(s.d[size_t(i)], L, f.startBit, f.length, f.bigEndian);
++            if (distinct.size() < 100000) distinct.insert(v);
++            mn = std::min(mn, v); mx = std::max(mx, v);
++        }
++        f.minRaw = mn; f.maxRaw = mx; f.unique = int(distinct.size());
++        f.kind = f.length == 1 ? FieldKind::Flag : FieldKind::Signal;
++        if (multiByte) f.note = intel ? "Intel byte order (low byte first)" : "Motorola byte order (high byte first)";
++        a.fields.push_back(f);
++        for (int p : bits) used[size_t(p)] = true;
++    };
++    for (const Seg &sg : multi)
++    {
++        bool free_ = true;
++        for (int p : sg.bits) if (used[size_t(p)]) { free_ = false; break; }
++        if (free_) addField(sg.bits, sg.intel);
++    }
++    for (const std::vector<int> &sg : segment(false))     /* what is left lies within single bytes */
++        addField(sg, false);
++
++    /* constant bytes, for completeness */
++    for (int b = 0; b < L; b++)
++        if (a.bytes[size_t(b)].unique == 1)
++        {
++            Field f;
++            f.kind = FieldKind::Constant;
++            f.startBit = b * 8; f.length = 8;
++            f.minRaw = f.maxRaw = uint64_t(a.bytes[size_t(b)].minV); f.unique = 1;
++            a.fields.push_back(f);
++        }
++
++    std::sort(a.fields.begin(), a.fields.end(), [](const Field &x, const Field &y) {
++        auto first = [](const Field &f) { return f.bigEndian ? (f.startBit / 8) * 8 + (7 - f.startBit % 8) : (f.startBit / 8) * 8 + 7 - (f.startBit + f.length - 1) % 8; };
++        return first(x) < first(y);
++    });
++    return a;
++}
++
++/* Human/AI readable summary of an analysis. */
++inline std::string describe(const IdAnalysis &a)
++{
++    std::string out;
++    char line[256];
++    snprintf(line, sizeof(line), "ID %s: %zu frames of %d bytes\n", keyText(a.key).c_str(), a.frames, a.length);
++    out += line;
++    out += "byte  min  max  uniq  changes  entropy  flip rate per bit (bit7..bit0)\n";
++    for (size_t b = 0; b < a.bytes.size(); b++)
++    {
++        const ByteStat &s = a.bytes[b];
++        snprintf(line, sizeof(line), "%4zu  %02X   %02X   %4d  %7d  %7.2f  ", b, s.minV, s.maxV, s.unique, s.changes, s.entropy);
++        out += line;
++        for (int k = 7; k >= 0; k--)
++        {
++            snprintf(line, sizeof(line), "%.2f%s", a.flipRate[b * 8 + size_t(k)], k ? " " : "\n");
++            out += line;
++        }
++    }
++    out += "fields (DBC start bit; Intel = LSB, Motorola = MSB):\n";
++    for (const Field &f : a.fields)
++    {
++        snprintf(line, sizeof(line), "  %-8s start %2d len %2d %s raw %llu..%llu, %d values%s%s\n", kindName(f.kind), f.startBit,
++                 f.length, f.bigEndian ? "Motorola" : "Intel   ", static_cast<unsigned long long>(f.minRaw),
++                 static_cast<unsigned long long>(f.maxRaw), f.unique, f.note.empty() ? "" : ", ", f.note.c_str());
++        out += line;
++    }
++    return out;
++}
++
++/* ------------------------------------------------- what changed: two windows */
++
++struct BitChange {
++    FrameKey key;
++    int      byte = 0, bit = 0;
++    double   oneA = 0, oneB = 0;      /* fraction of frames with the bit set */
++    double   flipA = 0, flipB = 0;
++    double   score = 0;
++};
++
++struct WindowDiff {
++    std::vector<FrameKey> onlyA, onlyB;
++    std::vector<std::pair<FrameKey, std::pair<double, double>>> rateChanged;   /* frames/s A, B */
++    std::vector<BitChange> bits;      /* strongest first */
++};
++
++inline WindowDiff diffWindows(const Capture &c, double a0, double a1, double b0, double b1, size_t maxBits = 50)
++{
++    struct Acc { size_t n = 0; std::vector<double> ones, flips; std::vector<uint8_t> prev; int len = 0; };
++    std::map<FrameKey, Acc> A, B;
++    for (size_t i = 0; i < c.size(); i++)
++    {
++        double t = c.seconds(i);
++        Acc *acc = (t >= a0 && t <= a1) ? &A[c.key(i)] : (t >= b0 && t <= b1) ? &B[c.key(i)] : nullptr;
++        if (!acc) continue;
++        int len = c.frame(i).len;
++        const uint8_t *d = c.data(i);
++        if (acc->ones.size() < size_t(len * 8)) { acc->ones.resize(size_t(len * 8), 0); acc->flips.resize(size_t(len * 8), 0); }
++        for (int p = 0; p < len * 8; p++)
++        {
++            bool v = d[p / 8] & (1u << (p % 8));
++            if (v) acc->ones[size_t(p)] += 1;
++            if (acc->n && p / 8 < acc->len && bool(acc->prev[size_t(p / 8)] & (1u << (p % 8))) != v) acc->flips[size_t(p)] += 1;
++        }
++        acc->prev.assign(d, d + len);
++        acc->len = len;
++        acc->n++;
++    }
++    WindowDiff w;
++    for (auto &kv : A) if (!B.count(kv.first)) w.onlyA.push_back(kv.first);
++    for (auto &kv : B) if (!A.count(kv.first)) w.onlyB.push_back(kv.first);
++    double la = std::max(a1 - a0, 1e-6), lb = std::max(b1 - b0, 1e-6);
++    for (auto &kv : A)
++    {
++        auto it = B.find(kv.first);
++        if (it == B.end()) continue;
++        double ra = kv.second.n / la, rb = it->second.n / lb;
++        if (std::max(ra, rb) > 1 && std::fabs(ra - rb) > 0.3 * std::max(ra, rb))
++            w.rateChanged.push_back({ kv.first, { ra, rb } });
++        size_t bitsN = std::min(kv.second.ones.size(), it->second.ones.size());
++        for (size_t p = 0; p < bitsN; p++)
++        {
++            BitChange bc;
++            bc.key = kv.first; bc.byte = int(p / 8); bc.bit = int(p % 8);
++            bc.oneA = kv.second.ones[p] / kv.second.n;
++            bc.oneB = it->second.ones[p] / it->second.n;
++            bc.flipA = kv.second.n > 1 ? kv.second.flips[p] / (kv.second.n - 1) : 0;
++            bc.flipB = it->second.n > 1 ? it->second.flips[p] / (it->second.n - 1) : 0;
++            /* a bit that is steady in both windows but at a different level is
++             * the strongest hint (a switch, a state); a changed toggle rate next */
++            double level = std::fabs(bc.oneA - bc.oneB);
++            double steady = 1 - std::min(1.0, (bc.flipA + bc.flipB) * 5);
++            bc.score = level * (0.5 + 0.5 * steady) + 0.25 * std::fabs(bc.flipA - bc.flipB);
++            if (bc.score >= 0.2) w.bits.push_back(bc);
++        }
++    }
++    std::sort(w.bits.begin(), w.bits.end(), [](const BitChange &x, const BitChange &y) { return x.score > y.score; });
++    if (w.bits.size() > maxBits) w.bits.resize(maxBits);
++    return w;
++}
++
++inline std::string describe(const WindowDiff &w)
++{
++    std::string out;
++    char line[200];
++    auto keys = [](const std::vector<FrameKey> &v) { std::string s; for (const FrameKey &k : v) s += (s.empty() ? "" : " ") + keyText(k); return s.empty() ? std::string("-") : s; };
++    out += "IDs only in window A: " + keys(w.onlyA) + "\n";
++    out += "IDs only in window B: " + keys(w.onlyB) + "\n";
++    for (const auto &r : w.rateChanged)
++    {
++        snprintf(line, sizeof(line), "rate of %s: %.1f -> %.1f frames/s\n", keyText(r.first).c_str(), r.second.first, r.second.second);
++        out += line;
++    }
++    out += "bits that behave differently (score, ID, byte.bit, set A -> B, flip rate A -> B):\n";
++    for (const BitChange &b : w.bits)
++    {
++        snprintf(line, sizeof(line), "  %.2f  %s  %d.%d  %.2f -> %.2f  %.2f -> %.2f\n", b.score, keyText(b.key).c_str(), b.byte, b.bit,
++                 b.oneA, b.oneB, b.flipA, b.flipB);
++        out += line;
++    }
++    if (w.bits.empty()) out += "  none\n";
++    return out;
++}
++
++/* ------------------------------------------------------------------ DBC */
++
++struct DbcSignal {
++    std::string name;
++    int         startBit = 0, length = 8;
++    bool        bigEndian = false, isSigned = false;
++    double      factor = 1, offset = 0, minV = 0, maxV = 0;
++    std::string unit, comment;
++};
++
++struct DbcMessage {
++    FrameKey    key;
++    std::string name;
++    int         length = 8;
++    std::vector<DbcSignal> signals_;
++};
++
++inline std::string dbcIdent(const std::string &s)
++{
++    std::string o;
++    for (char ch : s) o += (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_') ? ch : '_';
++    if (o.empty() || std::isdigit(static_cast<unsigned char>(o[0]))) o = "S_" + o;
++    return o;
++}
++
++inline std::string toDbc(const std::vector<DbcMessage> &msgs)
++{
++    std::string out = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: Vector__XXX\n\n";
++    char line[512];
++    std::string comments;
++    for (const DbcMessage &m : msgs)
++    {
++        uint32_t id = m.key.id | (m.key.ext ? 0x80000000u : 0);
++        snprintf(line, sizeof(line), "BO_ %u %s: %d Vector__XXX\n", id, dbcIdent(m.name).c_str(), m.length);
++        out += line;
++        for (const DbcSignal &s : m.signals_)
++        {
++            snprintf(line, sizeof(line), " SG_ %s : %d|%d@%d%c (%.10g,%.10g) [%.10g|%.10g] \"%s\" Vector__XXX\n", dbcIdent(s.name).c_str(),
++                     s.startBit, s.length, s.bigEndian ? 0 : 1, s.isSigned ? '-' : '+', s.factor, s.offset, s.minV, s.maxV, s.unit.c_str());
++            out += line;
++            if (!s.comment.empty())
++            {
++                std::string c = s.comment;
++                std::replace(c.begin(), c.end(), '"', '\'');
++                snprintf(line, sizeof(line), "CM_ SG_ %u %s \"%s\";\n", id, dbcIdent(s.name).c_str(), c.c_str());
++                comments += line;
++            }
++        }
++        out += "\n";
++    }
++    return out + comments;
++}
++
++} // namespace canre
++
++#endif // CANRE_H
 diff --git a/re/datapanelwindow.cpp b/re/datapanelwindow.cpp
 new file mode 100755
 index 0000000..0a888f3
@@ -5194,6 +7115,38 @@ index 0000000..e38882d
 +};
 +
 +#endif // DATAPANELWINDOW_H
+diff --git a/re/recapture.h b/re/recapture.h
+new file mode 100755
+index 0000000..6f95b3c
+--- /dev/null
++++ b/re/recapture.h
+@@ -0,0 +1,26 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef RECAPTURE_H
++#define RECAPTURE_H
++
++/* SavvyCAN's frame list -> canre::Capture (data frames only). */
++
++#include <QVector>
++#include "canre.h"
++#include "savvycompat.h"
++
++inline void fillCapture(canre::Capture &cap, const QVector<GuiFrame> &frames)
++{
++    cap = canre::Capture();
++    for (const GuiFrame &f : frames)
++    {
++        if (f.frameType() != GUI_DATA_FRAME)
++            continue;
++        QByteArray d = f.payload();
++        qint64 us = guiFrameMicros(f);
++        cap.add(us < 0 ? 0 : uint64_t(us), uint8_t(guiFrameBus(f)), f.frameId(), f.hasExtendedFrameFormat(), uint8_t(qMin(d.size(), 64)),
++                reinterpret_cast<const uint8_t *>(d.constData()));
++    }
++}
++
++#endif // RECAPTURE_H
 diff --git a/re/responsemeterwindow.cpp b/re/responsemeterwindow.cpp
 new file mode 100755
 index 0000000..6b30f30
@@ -5612,6 +7565,409 @@ index 0000000..7178fa5
 +}
 +
 +#endif // SAVVYCOMPAT_H
+diff --git a/re/signalfinderwindow.cpp b/re/signalfinderwindow.cpp
+new file mode 100755
+index 0000000..e59c3da
+--- /dev/null
++++ b/re/signalfinderwindow.cpp
+@@ -0,0 +1,330 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#include "signalfinderwindow.h"
++
++#include <QApplication>
++#include <QDoubleSpinBox>
++#include <QFile>
++#include <QFileDialog>
++#include <QHBoxLayout>
++#include <QHeaderView>
++#include <QLabel>
++#include <QLineEdit>
++#include <QMessageBox>
++#include <QPlainTextEdit>
++#include <QPushButton>
++#include <QSettings>
++#include <QSplitter>
++#include <QTabWidget>
++#include <QTableWidget>
++#include <QVBoxLayout>
++#include <cmath>
++
++#include "recapture.h"
++
++namespace {
++QTableWidgetItem *numItem(double v, int decimals = 0)
++{
++    QTableWidgetItem *it = new QTableWidgetItem;
++    it->setData(Qt::DisplayRole, decimals ? QVariant(QString::number(v, 'f', decimals).toDouble()) : QVariant(qlonglong(v)));
++    it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
++    return it;
++}
++QString keyStr(const canre::FrameKey &k) { return QString::fromStdString(canre::keyText(k)); }
++}
++
++SignalFinderWindow::SignalFinderWindow(const QVector<GuiFrame> *frameList, QWidget *parent)
++    : QWidget(parent, Qt::Window), frames(frameList)
++{
++    setWindowTitle(tr("Signal Finder"));
++    resize(1300, 820);
++
++    fromEdit = new QLineEdit(this);
++    toEdit = new QLineEdit(this);
++    fromEdit->setPlaceholderText(tr("start"));
++    toEdit->setPlaceholderText(tr("end"));
++    fromEdit->setMaximumWidth(90);
++    toEdit->setMaximumWidth(90);
++    QPushButton *refreshBtn = new QPushButton(tr("Analyze capture"), this);
++    refreshBtn->setToolTip(tr("Takes the frames captured so far; the time range limits the per-ID analysis"));
++    summary = new QLabel(this);
++    QHBoxLayout *top = new QHBoxLayout;
++    top->addWidget(new QLabel(tr("Time range (s, empty = all):"), this));
++    top->addWidget(fromEdit);
++    top->addWidget(new QLabel("-", this));
++    top->addWidget(toEdit);
++    top->addWidget(refreshBtn);
++    top->addWidget(summary, 1);
++
++    /* --- IDs and fields ---------------------------------------------------- */
++    idTable = new QTableWidget(0, 8, this);
++    idTable->setHorizontalHeaderLabels({ tr("ID"), tr("Bus"), tr("Frames"), tr("Period ms"), tr("Jitter ms"), tr("Len"),
++                                         tr("Changing bytes"), tr("Distinct") });
++    idTable->verticalHeader()->setVisible(false);
++    idTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
++    idTable->setSelectionBehavior(QAbstractItemView::SelectRows);
++    idTable->setSelectionMode(QAbstractItemView::SingleSelection);
++    idTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
++    idTable->setSortingEnabled(true);
++
++    heatmap = new QTableWidget(0, 8, this);
++    heatmap->setHorizontalHeaderLabels({ "7", "6", "5", "4", "3", "2", "1", "0" });
++    heatmap->setEditTriggers(QAbstractItemView::NoEditTriggers);
++    heatmap->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
++    heatmap->setToolTip(tr("Bit flip rate: how often the bit changes from one frame to the next (rows = bytes)"));
++
++    fieldTable = new QTableWidget(0, 9, this);
++    fieldTable->setHorizontalHeaderLabels({ tr("Use"), tr("Name"), tr("Kind"), tr("Start bit"), tr("Length"), tr("Byte order"),
++                                            tr("Raw range"), tr("Values"), tr("Note") });
++    fieldTable->verticalHeader()->setVisible(false);
++    fieldTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
++    fieldTable->horizontalHeader()->setSectionResizeMode(8, QHeaderView::Stretch);
++
++    QPushButton *addBtn = new QPushButton(tr("Add checked fields to DBC"), this);
++    QPushButton *saveBtn = new QPushButton(tr("Save DBC..."), this);
++    dbcView = new QPlainTextEdit(this);
++    dbcView->setReadOnly(true);
++    dbcView->setPlaceholderText(tr("DBC built from the checked fields; names are editable in the table"));
++    QHBoxLayout *dbcRow = new QHBoxLayout;
++    dbcRow->addWidget(addBtn);
++    dbcRow->addWidget(saveBtn);
++    dbcRow->addStretch(1);
++
++    QWidget *fieldsBox = new QWidget(this);
++    QVBoxLayout *fl = new QVBoxLayout(fieldsBox);
++    fl->setContentsMargins(0, 0, 0, 0);
++    fl->addWidget(new QLabel(tr("Detected fields (Intel start = LSB, Motorola start = MSB, DBC numbering):"), this));
++    fl->addWidget(fieldTable, 3);
++    fl->addLayout(dbcRow);
++    fl->addWidget(dbcView, 2);
++
++    QSplitter *right = new QSplitter(Qt::Vertical, this);
++    right->addWidget(heatmap);
++    right->addWidget(fieldsBox);
++    right->setStretchFactor(0, 2);
++    right->setStretchFactor(1, 3);
++    QSplitter *split = new QSplitter(Qt::Horizontal, this);
++    split->addWidget(idTable);
++    split->addWidget(right);
++    split->setStretchFactor(0, 2);
++    split->setStretchFactor(1, 3);
++
++    /* --- compare windows ---------------------------------------------------- */
++    auto spin = [this]() {
++        QDoubleSpinBox *s = new QDoubleSpinBox(this);
++        s->setDecimals(3);
++        s->setRange(0, 1e7);
++        s->setSuffix(" s");
++        return s;
++    };
++    aStart = spin(); aEnd = spin(); bStart = spin(); bEnd = spin();
++    QPushButton *cmpBtn = new QPushButton(tr("Compare"), this);
++    QHBoxLayout *cmpRow = new QHBoxLayout;
++    cmpRow->addWidget(new QLabel(tr("Window A"), this));
++    cmpRow->addWidget(aStart);
++    cmpRow->addWidget(aEnd);
++    cmpRow->addSpacing(20);
++    cmpRow->addWidget(new QLabel(tr("Window B"), this));
++    cmpRow->addWidget(bStart);
++    cmpRow->addWidget(bEnd);
++    cmpRow->addWidget(cmpBtn);
++    cmpRow->addStretch(1);
++    diffView = new QPlainTextEdit(this);
++    diffView->setReadOnly(true);
++    diffView->setFont(QFont("Monospace"));
++    diffView->setPlaceholderText(tr("Capture a baseline, then do something (press a button, turn a knob) and compare the two "
++                                    "time ranges: IDs that appear or vanish, rate changes, and the bits that behave differently."));
++    QWidget *cmpPage = new QWidget(this);
++    QVBoxLayout *cl = new QVBoxLayout(cmpPage);
++    cl->addLayout(cmpRow);
++    cl->addWidget(diffView);
++
++    QTabWidget *tabs = new QTabWidget(this);
++    tabs->addTab(split, tr("IDs and fields"));
++    tabs->addTab(cmpPage, tr("Compare time windows"));
++
++    QVBoxLayout *layout = new QVBoxLayout(this);
++    layout->addLayout(top);
++    layout->addWidget(tabs);
++
++    connect(refreshBtn, &QPushButton::clicked, this, &SignalFinderWindow::refresh);
++    connect(idTable, &QTableWidget::itemSelectionChanged, this, &SignalFinderWindow::idSelected);
++    connect(addBtn, &QPushButton::clicked, this, &SignalFinderWindow::addToDbc);
++    connect(saveBtn, &QPushButton::clicked, this, &SignalFinderWindow::saveDbc);
++    connect(cmpBtn, &QPushButton::clicked, this, &SignalFinderWindow::compare);
++
++    refresh();
++}
++
++bool SignalFinderWindow::timeRange(double &t0, double &t1) const
++{
++    bool ok0 = true, ok1 = true;
++    t0 = fromEdit->text().trimmed().isEmpty() ? -1 : fromEdit->text().toDouble(&ok0);
++    t1 = toEdit->text().trimmed().isEmpty() ? -1 : toEdit->text().toDouble(&ok1);
++    return ok0 && ok1;
++}
++
++void SignalFinderWindow::refresh()
++{
++    QApplication::setOverrideCursor(Qt::WaitCursor);
++    fillCapture(cap, *frames);
++    ids = canre::listIds(cap);
++    QApplication::restoreOverrideCursor();
++
++    summary->setText(tr("%1 frames, %2 s, %3 IDs").arg(cap.size()).arg(cap.spanSeconds(), 0, 'f', 3).arg(ids.size()));
++    idTable->setSortingEnabled(false);
++    idTable->setRowCount(int(ids.size()));
++    for (int r = 0; r < int(ids.size()); r++)
++    {
++        const canre::IdInfo &i = ids[size_t(r)];
++        QTableWidgetItem *idItem = new QTableWidgetItem(keyStr(i.key).section('@', 0, 0));
++        idItem->setData(Qt::UserRole, r);
++        idTable->setItem(r, 0, idItem);
++        idTable->setItem(r, 1, numItem(i.key.bus));
++        idTable->setItem(r, 2, numItem(double(i.count)));
++        idTable->setItem(r, 3, numItem(i.periodMs, 1));
++        idTable->setItem(r, 4, numItem(i.jitterMs, 1));
++        QString lens;
++        for (uint8_t l : i.lengths) lens += (lens.isEmpty() ? "" : "/") + QString::number(l);
++        idTable->setItem(r, 5, new QTableWidgetItem(lens));
++        idTable->setItem(r, 6, numItem(i.changingBytes));
++        idTable->setItem(r, 7, numItem(i.uniquePayloads));
++    }
++    idTable->setSortingEnabled(true);
++
++    double span = cap.spanSeconds();
++    for (QDoubleSpinBox *s : { aStart, aEnd, bStart, bEnd }) s->setMaximum(std::max(span, 0.001));
++    if (aEnd->value() == 0 && bEnd->value() == 0)
++    {
++        aStart->setValue(0); aEnd->setValue(span / 2);
++        bStart->setValue(span / 2); bEnd->setValue(span);
++    }
++}
++
++void SignalFinderWindow::idSelected()
++{
++    QList<QTableWidgetItem *> sel = idTable->selectedItems();
++    if (sel.isEmpty()) return;
++    QTableWidgetItem *idItem = idTable->item(sel.first()->row(), 0);
++    int idx = idItem->data(Qt::UserRole).toInt();
++    if (idx < 0 || idx >= int(ids.size())) return;
++    double t0, t1;
++    if (!timeRange(t0, t1))
++    {
++        summary->setText(tr("time range: numbers in seconds"));
++        return;
++    }
++    QApplication::setOverrideCursor(Qt::WaitCursor);
++    current = canre::analyzeId(cap, ids[size_t(idx)].key, t0, t1);
++    QApplication::restoreOverrideCursor();
++
++    heatmap->setRowCount(current.length);
++    QStringList rows;
++    for (int b = 0; b < current.length; b++)
++    {
++        rows << tr("byte %1").arg(b);
++        for (int k = 7; k >= 0; k--)
++        {
++            double rate = current.flipRate[size_t(b * 8 + k)];
++            double one = current.oneRate[size_t(b * 8 + k)];
++            QTableWidgetItem *it = new QTableWidgetItem(rate > 0 ? QString::number(rate, 'f', 2) : (one > 0.5 ? "1" : "0"));
++            double v = std::sqrt(rate);
++            it->setBackground(QColor(255, int(255 * (1 - v)), int(255 * (1 - v))));
++            it->setForeground(Qt::black);
++            it->setTextAlignment(Qt::AlignCenter);
++            it->setToolTip(tr("byte %1 bit %2 (position %3): flips %4, set in %5 % of frames")
++                               .arg(b).arg(k).arg(b * 8 + k).arg(rate, 0, 'f', 3).arg(one * 100, 0, 'f', 1));
++            heatmap->setItem(b, 7 - k, it);
++        }
++    }
++    heatmap->setVerticalHeaderLabels(rows);
++
++    fieldTable->setRowCount(int(current.fields.size()));
++    for (int r = 0; r < int(current.fields.size()); r++)
++    {
++        const canre::Field &f = current.fields[size_t(r)];
++        QTableWidgetItem *use = new QTableWidgetItem;
++        use->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
++        use->setCheckState(f.kind == canre::FieldKind::Signal || f.kind == canre::FieldKind::Counter ||
++                                   f.kind == canre::FieldKind::Checksum ? Qt::Checked : Qt::Unchecked);
++        fieldTable->setItem(r, 0, use);
++        fieldTable->setItem(r, 1, new QTableWidgetItem(QString("%1_%2").arg(canre::kindName(f.kind)).arg(f.startBit)));
++        auto ro = [](const QString &t) { QTableWidgetItem *i = new QTableWidgetItem(t); i->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable); return i; };
++        fieldTable->setItem(r, 2, ro(canre::kindName(f.kind)));
++        fieldTable->setItem(r, 3, ro(QString::number(f.startBit)));
++        fieldTable->setItem(r, 4, ro(QString::number(f.length)));
++        fieldTable->setItem(r, 5, ro(f.length == 1 || (f.startBit / 8 == (f.startBit + f.length - 1) / 8 && !f.bigEndian) ? "-" : f.bigEndian ? "Motorola" : "Intel"));
++        fieldTable->setItem(r, 6, ro(QString("%1 .. %2").arg(qulonglong(f.minRaw)).arg(qulonglong(f.maxRaw))));
++        fieldTable->setItem(r, 7, ro(QString::number(f.unique)));
++        fieldTable->setItem(r, 8, ro(QString::fromStdString(f.note)));
++    }
++    summary->setText(tr("%1: %2 frames of %3 bytes analyzed").arg(keyStr(current.key)).arg(current.frames).arg(current.length));
++}
++
++void SignalFinderWindow::addToDbc()
++{
++    if (current.frames == 0) return;
++    canre::DbcMessage *m = nullptr;
++    for (canre::DbcMessage &x : dbc)
++        if (x.key == current.key) m = &x;
++    if (!m)
++    {
++        canre::DbcMessage nm;
++        nm.key = current.key;
++        nm.name = "MSG_" + canre::keyText(current.key).substr(0, canre::keyText(current.key).find('@'));
++        nm.length = current.length;
++        dbc.push_back(nm);
++        m = &dbc.back();
++    }
++    for (int r = 0; r < fieldTable->rowCount() && r < int(current.fields.size()); r++)
++    {
++        if (fieldTable->item(r, 0)->checkState() != Qt::Checked) continue;
++        const canre::Field &f = current.fields[size_t(r)];
++        canre::DbcSignal s;
++        s.name = fieldTable->item(r, 1)->text().toStdString();
++        s.startBit = f.startBit;
++        s.length = f.length;
++        s.bigEndian = f.bigEndian;
++        s.minV = double(f.minRaw);
++        s.maxV = double(f.maxRaw);
++        s.comment = std::string(canre::kindName(f.kind)) + (f.note.empty() ? "" : ": " + f.note);
++        auto same = std::find_if(m->signals_.begin(), m->signals_.end(), [&](const canre::DbcSignal &o) { return o.name == s.name; });
++        if (same != m->signals_.end()) *same = s;
++        else m->signals_.push_back(s);
++    }
++    dbcView->setPlainText(QString::fromStdString(canre::toDbc(dbc)));
++}
++
++void SignalFinderWindow::saveDbc()
++{
++    if (dbc.empty())
++    {
++        QMessageBox::information(this, tr("Signal Finder"), tr("Add fields to the DBC first."));
++        return;
++    }
++    QSettings settings;
++    QString path = QFileDialog::getSaveFileName(this, tr("Save DBC"), settings.value("SignalFinder/dbcPath").toString(), tr("DBC (*.dbc)"));
++    if (path.isEmpty()) return;
++    QFile f(path);
++    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
++    {
++        QMessageBox::warning(this, tr("Signal Finder"), tr("Cannot write %1").arg(path));
++        return;
++    }
++    f.write(QByteArray::fromStdString(canre::toDbc(dbc)));
++    settings.setValue("SignalFinder/dbcPath", path);
++    summary->setText(tr("saved %1; load it with File > DBC File Manager").arg(path));
++}
++
++void SignalFinderWindow::compare()
++{
++    if (aEnd->value() <= aStart->value() || bEnd->value() <= bStart->value())
++    {
++        diffView->setPlainText(tr("Each window needs start < end."));
++        return;
++    }
++    QApplication::setOverrideCursor(Qt::WaitCursor);
++    canre::WindowDiff w = canre::diffWindows(cap, aStart->value(), aEnd->value(), bStart->value(), bEnd->value(), 60);
++    QApplication::restoreOverrideCursor();
++    diffView->setPlainText(QString::fromStdString(canre::describe(w)));
++}
+diff --git a/re/signalfinderwindow.h b/re/signalfinderwindow.h
+new file mode 100755
+index 0000000..41503ed
+--- /dev/null
++++ b/re/signalfinderwindow.h
+@@ -0,0 +1,61 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef SIGNALFINDERWINDOW_H
++#define SIGNALFINDERWINDOW_H
++
++/*
++ * RE Tools > Signal Finder: automatic analysis of the captured frames
++ * (re/canre.h). Per ID: timing, a bit flip heatmap, and the fields it
++ * found (rolling counters, checksums, constants, flags, signal candidates
++ * with byte order); checked fields go into a DBC file. A second tab
++ * compares two time windows ("what changed when I pressed the button").
++ */
++
++#include <QVector>
++#include <QWidget>
++#include <vector>
++
++#include "canre.h"
++#include "savvycompat.h"
++
++class QDoubleSpinBox;
++class QLabel;
++class QLineEdit;
++class QPlainTextEdit;
++class QTableWidget;
++
++class SignalFinderWindow : public QWidget
++{
++    Q_OBJECT
++
++public:
++    SignalFinderWindow(const QVector<GuiFrame> *frames, QWidget *parent = nullptr);
++
++private slots:
++    void refresh();
++    void idSelected();
++    void addToDbc();
++    void saveDbc();
++    void compare();
++
++private:
++    bool timeRange(double &t0, double &t1) const;
++
++    const QVector<GuiFrame> *frames;
++    canre::Capture cap;
++    std::vector<canre::IdInfo> ids;
++    canre::IdAnalysis current;
++    std::vector<canre::DbcMessage> dbc;
++
++    QLineEdit      *fromEdit;
++    QLineEdit      *toEdit;
++    QLabel         *summary;
++    QTableWidget   *idTable;
++    QTableWidget   *heatmap;
++    QTableWidget   *fieldTable;
++    QPlainTextEdit *dbcView;
++    QDoubleSpinBox *aStart, *aEnd, *bStart, *bEnd;
++    QPlainTextEdit *diffView;
++};
++
++#endif // SIGNALFINDERWINDOW_H
 diff --git a/ui/newconnectiondialog.ui b/ui/newconnectiondialog.ui
 index e459583..8a79fa3 100644
 --- a/ui/newconnectiondialog.ui
