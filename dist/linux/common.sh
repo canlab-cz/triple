@@ -8,12 +8,13 @@
 #   WORK          build directory, preferably on a Linux file system
 #                 (default ~/.cache/usb2can-triple-dist)
 #   JOBS          parallel build jobs (default: number of CPUs)
+#   OUT           where the packages go (default dist/out)
 
 set -eu
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 VERSION=$(cat "$REPO/dist/VERSION")
-OUT="$REPO/dist/out"
+OUT=${OUT:-$REPO/dist/out}
 WORK=${WORK:-$HOME/.cache/usb2can-triple-dist}
 SAVVYCAN_GIT=${SAVVYCAN_GIT:-https://github.com/collin80/SavvyCAN.git}
 SAVVYCAN_REV=${SAVVYCAN_REV:-e439670}

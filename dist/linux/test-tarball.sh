@@ -10,8 +10,13 @@
 set -eu
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 IMAGE=${1:-ubuntu:24.04}
-TAR=$(ls "$REPO"/dist/out/usb2can-triple-*-linux-*.tar.gz | tail -1)
-docker run --rm -i -v "$TAR:/pkg.tar.gz:ro" "$IMAGE" bash -s <<'EOF'
+OUT=${OUT:-$REPO/dist/out}
+# mount a copy: a bind mount of a file under /mnt/c can leave WSL unable to
+# recreate that path later (Docker Desktop)
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+cp "$(ls "$OUT"/usb2can-triple-*-linux-*.tar.gz | tail -1)" "$TMP/pkg.tar.gz"
+docker run --rm -i -v "$TMP:/pkg:ro" "$IMAGE" bash -s <<'EOF'
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null; then
@@ -24,7 +29,7 @@ else
     dnf install -y -q mesa-libGL mesa-libEGL libX11 libX11-xcb libxcb fontconfig freetype glib2 harfbuzz libpng \
         krb5-libs cups-libs dbus-libs libXrender libSM libICE python3 make gcc kmod kernel-devel findutils >/dev/null
 fi
-cd /tmp && tar xzf /pkg.tar.gz && cd usb2can-triple-*
+cd /tmp && tar xzf /pkg/pkg.tar.gz && cd usb2can-triple-*
 echo "== missing libraries"
 missing=0
 for f in savvycan/SavvyCAN $(find savvycan/plugins savvycan/lib -name '*.so*') tools/canre_cli; do

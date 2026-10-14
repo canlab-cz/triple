@@ -8,7 +8,12 @@
 set -eu
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 IMAGE=${1:-ubuntu:24.04}
-docker run --rm -i -v "$REPO/dist/out:/debs:ro" "$IMAGE" bash -s <<'EOF'
+OUT=${OUT:-$REPO/dist/out}
+# mount a copy, not dist/out itself (see dist/linux/test-tarball.sh)
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+cp "$OUT"/*.deb "$TMP/"
+docker run --rm -i -v "$TMP:/debs:ro" "$IMAGE" bash -s <<'EOF'
 set -eu
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq

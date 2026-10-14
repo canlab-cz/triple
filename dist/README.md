@@ -52,6 +52,19 @@ tools need Python 3 and `pip install pyserial`.
 
 ## Building
 
+Everything at once on Windows with WSL2 (Ubuntu 22.04) and Docker, from a
+clean state, with the container tests and `dist/out/SHA256SUMS`:
+
+```bat
+powershell -ExecutionPolicy Bypass -File dist\build-all.ps1 -Clean -Test
+```
+
+It builds the Linux packages in WSL's own file system and copies them to
+`dist\out` (writing through `/mnt/c` failed for paths Docker Desktop had
+bind-mounted before). A full run takes about 10 minutes.
+
+Or each part separately:
+
 | Package | Build on | Command |
 |---|---|---|
 | Debian packages | Ubuntu 22.04 (native or WSL2) | `bash dist/debian/build.sh` |
