@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 CANLAB s.r.o.
 # Host-side test of the Triple wire codec (driver/triple_proto.c).
 CC      ?= gcc
 CFLAGS  ?= -std=gnu99 -Wall -Wextra -Wno-unused-parameter

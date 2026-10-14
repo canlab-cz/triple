@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 CANLAB s.r.o.
 # Runs inside a container that has kernel headers installed.
 # The repository is mounted read-only at /src.
 KDIR=$(ls -d /lib/modules/*/build /usr/src/kernels/* 2>/dev/null | head -1)

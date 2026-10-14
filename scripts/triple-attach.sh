@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 CANLAB s.r.o.
 # Manual alternative to the udev rule: attach one adapter and bring its
 # three ports up with the README default bitrates.
 #   sh scripts/triple-attach.sh ttyACM0

@@ -17,3 +17,5 @@ tripled_32
 tripled_64
 utility/tripled_32
 utility/tripled_64
+__pycache__/
+*.pyc

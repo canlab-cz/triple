@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 CANLAB s.r.o.
 # Attaches the usb2cansocketcan line discipline to one serial port.
 # Started by the udev rule for every USB2CAN Triple that is plugged in:
 #   usb2can-triple@ttyACM0.service

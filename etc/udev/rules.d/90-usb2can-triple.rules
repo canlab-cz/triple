@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 CANLAB s.r.o.
 # CANLAB USB2CAN Triple: attach the SocketCAN line discipline when the
 # adapter's serial port appears, and give the CAN interfaces stable names.
 #

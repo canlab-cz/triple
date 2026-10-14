@@ -137,7 +137,8 @@ Driver v1.x (tty line discipline plus the `tripled` daemon, kernels up to
 
 ## License
 
-Each source file states its license in an `SPDX-License-Identifier` line.
+Each source file states its license in an `SPDX-License-Identifier` line;
+the full texts are in `LICENSES/` and `LICENSE` lists the assignment.
 
 | Part | License |
 |---|---|

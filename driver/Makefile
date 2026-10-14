@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (c) 2026 CANLAB s.r.o.
 KERNEL_SRC       ?= /lib/modules/$(shell uname -r)/build
 MODULE_DIR       := $(CURDIR)
 
