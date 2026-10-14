@@ -33,7 +33,10 @@ TripleSerial::TripleSerial(QString portName) :
     tsWrapAdd = 0;
     tsHaveBase = false;
     for (int i = 0; i < TRIPLE_PORTS; i++)
+    {
         lastTec[i] = lastRec[i] = lastState[i] = 0;
+        busState[i] = 0;
+    }
 
     /* defaults matching the Linux driver's README: 250k, 500k, FD 125k / 6.7M */
     CANBus bus;
@@ -459,7 +462,7 @@ void TripleSerial::handleFrame(const triple_frame &f)
     else if (f.has_ts)
         frame.setTimeStamp(TripleGuiFrame::TimeStamp(0, adapterTimeToMicros(f.ts)));
     else
-        frame.setTimeStamp(TripleGuiFrame::TimeStamp(0, QDateTime::currentMSecsSinceEpoch() * 1000ll - (qint64)CANConManager::getInstance()->getTimeBasis()));
+        frame.setTimeStamp(TripleGuiFrame::TimeStamp(0, hostTimeToMicros()));
 
     TripleGuiFrame *slot = getQueue().get();
     if (!slot)
@@ -472,9 +475,30 @@ void TripleSerial::handleFrame(const triple_frame &f)
     getQueue().queue();
 }
 
+qint64 TripleSerial::hostTimeToMicros()
+{
+    return QDateTime::currentMSecsSinceEpoch() * 1000ll - (qint64)CANConManager::getInstance()->getTimeBasis();
+}
+
+/* Bus state from the adapter's counters, same thresholds as the Linux
+ * driver and the CAN specification: warning at 96, passive at 128. The
+ * firmware's own state byte (0 active, 1 passive) is honoured too, and
+ * anything above 1 is taken as bus off (not observed on hardware yet). */
+static int busStateFrom(const triple_port_status &ps)
+{
+    if (ps.state >= 2)
+        return 3;
+    int cnt = ps.tec > ps.rec ? ps.tec : ps.rec;
+    if (ps.state == 1 || cnt >= 128)
+        return 2;
+    if (cnt >= 96)
+        return 1;
+    return 0;
+}
+
 void TripleSerial::handleStatus(const triple_status &st)
 {
-    static const char *stateName[] = { "error active", "error passive", "bus off?" };
+    static const char *stateName[] = { "error active", "error warning", "error passive", "bus off" };
     for (int i = 0; i < TRIPLE_PORTS; i++)
     {
         const triple_port_status &ps = st.port[i];
@@ -483,10 +507,64 @@ void TripleSerial::handleStatus(const triple_status &st)
         lastTec[i] = ps.tec;
         lastRec[i] = ps.rec;
         lastState[i] = ps.state;
-        int s = ps.state > 2 ? 2 : ps.state;
+
+        int s = busStateFrom(ps);
         sendDebug("Triple: CAN" + QString::number(i + 1) + " " + stateName[s] +
                   ", TEC " + QString::number(ps.tec) + " REC " + QString::number(ps.rec));
+        if (s != busState[i])
+        {
+            queueErrorFrame(i, s, busState[i], ps.tec, ps.rec);
+            busState[i] = s;
+        }
     }
+}
+
+/* Error frame in SocketCAN layout (linux/can/error.h), which SavvyCAN
+ * shows with its error flags: data[1] controller state, data[6] TEC,
+ * data[7] REC. */
+void TripleSerial::queueErrorFrame(int port, int state, int oldState, uint8_t tec, uint8_t rec)
+{
+    if (isCapSuspended())
+        return;
+
+    enum { CRTL_RX_WARNING = 0x04, CRTL_TX_WARNING = 0x08, CRTL_RX_PASSIVE = 0x10,
+           CRTL_TX_PASSIVE = 0x20, CRTL_ACTIVE = 0x40 };
+    uint8_t ctrl = 0;
+    switch (state)
+    {
+    case 0: ctrl = CRTL_ACTIVE; break;
+    case 1: ctrl = tec >= rec ? CRTL_TX_WARNING : CRTL_RX_WARNING; break;
+    case 2: ctrl = tec >= rec ? CRTL_TX_PASSIVE : CRTL_RX_PASSIVE; break;
+    default: break;
+    }
+    Q_UNUSED(oldState);
+
+    QByteArray data(8, 0);
+    data[1] = (char)ctrl;
+    data[6] = (char)tec;
+    data[7] = (char)rec;
+
+    TripleGuiFrame frame;
+    frame.setFrameType(TripleGuiFrame::ErrorFrame);
+    frame.setError(state == 3 ? TripleGuiFrame::BusOffError : TripleGuiFrame::ControllerError);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    frame.setBus(port);
+    frame.setReceived(true);
+#else
+    frame.bus = port;
+    frame.isReceived = true;
+#endif
+    frame.setPayload(data);
+    if (useSystemTime)
+        frame.setTimeStamp(TripleGuiFrame::TimeStamp::fromMicroSeconds(QDateTime::currentMSecsSinceEpoch() * 1000ll));
+    else
+        frame.setTimeStamp(TripleGuiFrame::TimeStamp(0, hostTimeToMicros()));
+
+    TripleGuiFrame *slot = getQueue().get();
+    if (!slot)
+        return;
+    *slot = frame;
+    getQueue().queue();
 }
 
 /* debugging data typed into the connection window console: send raw */

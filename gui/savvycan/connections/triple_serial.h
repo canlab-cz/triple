@@ -61,6 +61,8 @@ private:
     void handleFrame(const triple_frame &f);
     void handleStatus(const triple_status &st);
     qint64 adapterTimeToMicros(uint32_t ts);
+    qint64 hostTimeToMicros();
+    void queueErrorFrame(int port, int state, int oldState, uint8_t tec, uint8_t rec);
 
     QSerialPort *serial;
 
@@ -80,6 +82,7 @@ private:
     uint8_t  lastTec[TRIPLE_PORTS];
     uint8_t  lastRec[TRIPLE_PORTS];
     uint8_t  lastState[TRIPLE_PORTS];
+    int      busState[TRIPLE_PORTS];  /* 0 active, 1 warning, 2 passive, 3 bus off */
     QString  fwVersion;
 };
 

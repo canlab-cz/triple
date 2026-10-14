@@ -14,7 +14,9 @@ What the connection provides:
   window (Bus Details tabs 0, 1, 2);
 * receive with the adapter's 1 us hardware timestamps, transmit on all
   three buses, CAN FD with BRS on bus 2;
-* adapter error counters and error state in the device console;
+* adapter error counters and error state in the device console, and an
+  error frame in the frame list on every bus state change (warning,
+  passive, bus off, back to active) with TEC/REC in bytes 6 and 7;
 * the adapter's 100-byte message limit enforced on transmit.
 
 ## Apply to an upstream checkout
