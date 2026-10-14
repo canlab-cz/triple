@@ -51,7 +51,9 @@ Done 2026-10-14 (driver v1.4, daemon v1.1), not yet verified on hardware:
 - [x] Host-side codec round-trip test (`tests/codec`): encode -> escape -> decode for CAN 2.0 and FD, RTR, all special bytes, special-valued length bytes, malformed input.
 - [x] README updated.
 - [x] Hardware verification with two adapters back to back (WSL2 6.6.87.2, both adapters attached through usbipd-win, 2026-10-14), see "Protocol facts verified on hardware" below.
-- [ ] Still open on hardware: TX under load on two ports at once; USB unplug while attached, then re-plug and restart.
+- [x] TX under load: 2000 frames on port 1 (250k) and 2000 on port 2 (500k) at the same time with 1 ms gap, and a 500-frame zero-gap burst: all received on the second adapter, no sequence gaps, no kernel warnings.
+- [x] USB unplug of both adapters while attached with daemons running: no oops, all interfaces torn down, module reference count back to 0. Re-plug needs `usbipd attach` again and a daemon restart.
+- [x] tx_packets accounting fixed (was counted per tty wakeup, undercounting under load).
 
 #### Protocol facts verified on hardware (firmware as shipped on SN 2604002 and its sibling)
 
@@ -59,7 +61,10 @@ Done 2026-10-14 (driver v1.4, daemon v1.1), not yet verified on hardware:
 - Byte 1 is the raw wire length (escapes included) and is NOT escaped in either direction. The firmware reads it as a plain byte count: an escaped length `1F 10` is taken as "31 bytes" and swallows the following frame as well. A 15-byte frame carries a literal `0F` in byte 1 and is accepted.
 - Data bytes, identifier bytes and the flag byte ARE escaped with `1F` in both directions.
 - The firmware sends a status frame (`0x8A`, 42 bytes) every 250 ms on its own. The driver ignores it; Phase 2 should decode it for error counters and bus state.
-- CAN 2.0 on ports 1 and 2 (250 kbit/s and 500 kbit/s) and CAN FD on port 3 (dlc 8 and 12, with and without BRS) pass end to end in both directions.
+- CAN 2.0 on ports 1 and 2 (250 kbit/s and 500 kbit/s): every dlc 0..8, standard and extended ids, all special data bytes, both directions.
+- CAN FD on port 3 (125 kbit/s nominal, 6.7 Mbit/s data): dlc 8, 12, 48, 64 with and without BRS, both directions, up to 100 bytes on the wire.
+- A 137-byte frame from the host (dlc 64, every data byte escaped) locks up the adapter's host-to-bus path. Status frames keep coming, a USB reset and re-sending the settings commands do not recover it, only a power cycle does. The driver now drops frames longer than `max_wire_len` (module parameter, default 100, which is the largest size verified) with `tx_dropped++`. The real firmware limit is somewhere in 101..136 and should be read from the firmware source rather than bisected (each miss costs a power cycle). 100 bytes covers dlc 64 with up to 27 escaped data bytes.
+- Status frame payload (38 bytes after the command byte) is not decoded. Observed: byte 0 = 0x05, byte 6 went 0x00 -> 0x04 after traffic, byte 27 = 0x10 on one adapter and 0x13 on the other after the FD lock-up (candidate for CAN3 error state). To be mapped against the firmware source in Phase 2.
 
 ### Phase 2: rewrite as a modern CAN device driver (template: in-tree `drivers/net/can/slcan`)
 

@@ -290,6 +290,10 @@ int triple_encaps(USB2CAN_TRIPLE *adapter, int channel, struct sk_buff *skb)
   adapter->xhead = adapter->xbuff + actual;
   adapter->current_channel = channel;
   adapter->devs[channel]->stats.tx_bytes += dlc;
+  /* Fully handed to the tty in one go: count it here. Otherwise
+   * triple_transmit() counts it when the remainder has drained. */
+  if (adapter->xleft == 0)
+    adapter->devs[channel]->stats.tx_packets++;
 
   return 0;
 
@@ -321,9 +325,7 @@ void triple_transmit(struct work_struct *work)
 
   if (adapter->xleft <= 0)
   {
-    /* Serial buffer drained: account the frame and let the next one in. */
-    adapter->devs[adapter->current_channel]->stats.tx_packets++;
-
+    /* Nothing left to write: let the next frame in. */
     clear_bit(TTY_DO_WRITE_WAKEUP, &adapter->tty->flags);
     spin_unlock_bh(&adapter->lock);
 
@@ -338,6 +340,8 @@ void triple_transmit(struct work_struct *work)
     actual = 0;
   adapter->xleft -= actual;
   adapter->xhead += actual;
+  if (adapter->xleft == 0)
+    adapter->devs[adapter->current_channel]->stats.tx_packets++;
   spin_unlock_bh(&adapter->lock);
 
 } /* END: triple_transmit() */

@@ -36,6 +36,7 @@ Notes for v1.4:
 * Unplugging the adapter while the driver is attached no longer crashes the kernel, but it still leaves `tripled` running; `sh ./end.sh` remains the clean way to stop.
 * Received frames with a hardware timestamp (timestamp mode) are not decoded yet; `tripled` keeps timestamp mode off.
 * Two protocol bugs of v1.3 were found with two adapters wired back to back: received extended/standard identifiers were swapped, and standard frames with 6 data bytes could never be sent. Both fixed and verified on hardware.
+* Frames longer than 100 bytes on the wire (CAN FD with many escaped data bytes) are dropped by the driver because they lock up the adapter firmware; see `max_wire_len` in `modinfo usb2cansocketcan`. Debug output can be switched on at runtime with `echo 1 > /sys/module/usb2cansocketcan/parameters/show_debug_tran`.
 * Host-side protocol codec test: `make -C tests/codec test`
 * Refactoring and analyzer roadmap: doc/PLAN.md
 
