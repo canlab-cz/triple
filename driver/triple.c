@@ -83,6 +83,17 @@ struct triple_port {
   struct net_device *dev;
   u8 index;                         /* 0..2 */
   struct can_berr_counter bec;      /* from the last status message */
+  bool tx_full;                     /* no transmit credit left: queue held */
+  bool fc_valid;                    /* the fields below hold a previous status */
+  int fc_base;                      /* frames that may go at once after the last status */
+  int fc_rate;                      /* plus this many, spread over the status period */
+  unsigned long fc_stamp;           /* jiffies of the last status */
+  int tx_sent;                      /* frames handed to the adapter since the last status */
+  int last_fill;                    /* adapter transmit buffer fill in the last status */
+  int tx_cap;                       /* effective size of that buffer: on CAN3 it depends
+                                       on the frame sizes (120 classic, ~102 at 24 bytes) */
+  bool ovf_valid;                   /* last_ovf holds a value from this session */
+  u8 last_ovf;                      /* adapter's transmit overflow counter (mod 256) */
 };
 
 struct triple_adapter {
@@ -91,6 +102,7 @@ struct triple_adapter {
 
   spinlock_t lock;
   struct work_struct tx_work;
+  struct delayed_work fc_work;      /* releases queues held for paced credit */
   wait_queue_head_t xcmd_wait;
   unsigned long flags;
 #define TF_ERROR 0                  /* rx stream out of sync, resyncing */
@@ -155,13 +167,75 @@ static void triple_tx_complete(struct triple_adapter *a)
   dev->stats.tx_bytes += can_get_echo_skb(dev, 0, NULL);
 }
 
+#define TRIPLE_STATUS_MS 250
+
+static void triple_wake_queues(struct triple_adapter *a);
+
+/* Called with adapter->lock held. Transmit credit is released at the rate
+ * the bus drained the adapter's buffer in the last status period, not all
+ * at once: the USB link takes frames faster than the bus, and a burst of a
+ * whole period's credit overflows the buffer in the middle of the period
+ * (doc/protocol.md 5.1). Returns true when the port may send now, otherwise
+ * holds it and, when more credit comes within the period, arms fc_work. */
+static bool triple_fc_may_send(struct triple_adapter *a, struct triple_port *port)
+{
+  unsigned int ms = jiffies_to_msecs(jiffies - port->fc_stamp);
+  int allowed;
+
+  if (ms > TRIPLE_STATUS_MS)
+    ms = TRIPLE_STATUS_MS;
+  allowed = port->fc_base + port->fc_rate * (int)ms / TRIPLE_STATUS_MS;
+  port->tx_full = port->tx_sent >= allowed;
+  if (port->tx_full && port->fc_rate > 0 && ms < TRIPLE_STATUS_MS)
+  {
+    /* time at which the next frame is allowed */
+    unsigned int next = (port->tx_sent + 1 - port->fc_base) * TRIPLE_STATUS_MS / port->fc_rate + 1;
+
+    if (next > TRIPLE_STATUS_MS)
+      next = TRIPLE_STATUS_MS;
+    schedule_delayed_work(&a->fc_work, msecs_to_jiffies(next > ms ? next - ms : 1));
+  }
+  return !port->tx_full;
+}
+
+static void triple_fc_release(struct work_struct *work)
+{
+  struct triple_adapter *a = container_of(to_delayed_work(work), struct triple_adapter, fc_work);
+  bool idle;
+  int i;
+
+  spin_lock_bh(&a->lock);
+  if (!a->tty)
+  {
+    spin_unlock_bh(&a->lock);
+    return;
+  }
+  for (i = 0; i < TRIPLE_PORTS; i++)
+  {
+    struct triple_port *port = netdev_priv(a->devs[i]);
+
+    if (port->tx_full)
+      triple_fc_may_send(a, port);
+  }
+  /* otherwise the completion of the frame in flight wakes the queues */
+  idle = a->tx_port < 0 && a->xleft <= 0 && !test_bit(TF_XCMD, &a->flags);
+  spin_unlock_bh(&a->lock);
+  if (idle)
+    triple_wake_queues(a);
+}
+
 static void triple_wake_queues(struct triple_adapter *a)
 {
   int i;
 
   for (i = 0; i < TRIPLE_PORTS; i++)
-    if (netif_running(a->devs[i]))
+  {
+    struct triple_port *port = netdev_priv(a->devs[i]);
+
+    /* a port whose buffer in the adapter is nearly full stays held */
+    if (netif_running(a->devs[i]) && !port->tx_full)
       netif_wake_queue(a->devs[i]);
+  }
 }
 
 /* Work item: push remaining bytes to the tty, complete when drained. */
@@ -349,6 +423,8 @@ static netdev_tx_t triple_xmit(struct sk_buff *skb, struct net_device *dev)
 
   can_put_echo_skb(skb, dev, 0, 0);
   a->tx_port = port->index;
+  port->tx_sent++;
+  triple_fc_may_send(a, port);    /* holds the port when its credit is used up */
 
   /* Request the wakeup before writing: a short write may complete inside
    * ops->write() and the wakeup would otherwise never come. */
@@ -442,6 +518,94 @@ static enum can_state triple_counter_state(u8 cnt)
   return CAN_STATE_ERROR_ACTIVE;
 }
 
+/* Controller problem error frame (CAN_ERR_CRTL_*). */
+static void triple_ctrl_error(struct net_device *dev, u8 ctrl)
+{
+  struct can_frame *cf;
+  struct sk_buff *skb = alloc_can_err_skb(dev, &cf);
+
+  if (!skb)
+    return;
+  cf->can_id |= CAN_ERR_CRTL;
+  cf->data[1] = ctrl;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
+  netif_rx(skb);
+#else
+  netif_rx_ni(skb);
+#endif
+}
+
+/* Transmit buffer and overflow fields of the status message (measured on
+ * firmware 1.41, doc/protocol.md 5.1): count frames the adapter dropped,
+ * report receive overloads, and hold the queue while the adapter's
+ * transmit buffer is nearly full instead of losing frames there. */
+static void triple_rx_buffers(struct triple_adapter *a, struct net_device *dev, struct triple_port *port,
+                              const struct triple_port_status *ps)
+{
+  int nominal = port->index < 2 ? TRIPLE_TX_BUFFER_CAN : TRIPLE_TX_BUFFER_FD;
+  int lost = 0;
+
+  if (port->ovf_valid)
+  {
+    lost = (u8)(ps->tx_overflow - port->last_ovf);
+
+    if (lost)
+    {
+      dev->stats.tx_dropped += lost;
+      triple_ctrl_error(dev, CAN_ERR_CRTL_TX_OVERFLOW);
+      if (net_ratelimit())
+        netdev_warn(dev, "adapter transmit buffer full, %u frames dropped\n", lost);
+    }
+  }
+  port->last_ovf = ps->tx_overflow;
+  port->ovf_valid = true;
+
+  if (ps->rx_overload)
+  {
+    dev->stats.rx_over_errors++;
+    dev->stats.rx_errors++;
+    triple_ctrl_error(dev, CAN_ERR_CRTL_RX_OVERFLOW);
+  }
+
+  /* Credit based flow control. The status comes every 250 ms; until the
+   * next one the host may fill the adapter's buffer up to 3/4 at once,
+   * plus what the bus took out of it during the last period
+   * (measured: last fill + frames sent - frames dropped - this fill),
+   * paced over the period. A fast healthy bus keeps its throughput, a
+   * slow or blocked one cannot overflow the buffer. */
+  spin_lock_bh(&a->lock);
+  {
+    int fill = ps->tx_fill;
+    int drained = port->fc_valid ? port->last_fill + port->tx_sent - lost - fill : 0;
+
+    /* CAN3: learn the buffer size, which depends on the frame sizes:
+     * frames were dropped at this fill, or it holds more */
+    if (port->index == 2 && lost && fill >= nominal / 2 && fill < port->tx_cap)
+      port->tx_cap = fill;
+    else if (fill > port->tx_cap)
+      port->tx_cap = min(fill, nominal);
+    if (drained < 0)
+      drained = 0;
+    /* margins: the buffer is filled to 3/4 at most, and the bus may take
+     * a quarter fewer frames in the next period */
+    port->fc_base = max(port->tx_cap * 3 / 4 - fill, 0);
+    port->fc_rate = drained - drained / 4;
+    port->fc_stamp = jiffies;
+    if (debug && (fill || lost || port->tx_sent))
+      netdev_info(dev, "adapter tx buffer %d of %d, sent %d, dropped %d, drained %d, credit %d\n", fill,
+                  port->tx_cap, port->tx_sent, lost, drained, port->fc_base + port->fc_rate);
+    port->last_fill = fill;
+    port->tx_sent = 0;
+    port->fc_valid = true;
+    triple_fc_may_send(a, port);
+  }
+  if (port->tx_full)
+    netif_stop_queue(dev);
+  else if (netif_queue_stopped(dev) && a->tx_port < 0 && a->xleft <= 0 && !test_bit(TF_XCMD, &a->flags))
+    netif_wake_queue(dev);        /* otherwise the completion of the frame in flight wakes it */
+  spin_unlock_bh(&a->lock);
+}
+
 static void triple_rx_status(struct triple_adapter *a, const struct triple_status *st)
 {
   int i;
@@ -458,7 +622,10 @@ static void triple_rx_status(struct triple_adapter *a, const struct triple_statu
     port->bec.txerr = ps->tec;
     port->bec.rxerr = ps->rec;
 
-    if (!netif_running(dev) || port->can.state == CAN_STATE_BUS_OFF)
+    if (!netif_running(dev))
+      continue;
+    triple_rx_buffers(a, dev, port, ps);
+    if (port->can.state == CAN_STATE_BUS_OFF)
       continue;
 
     tx_state = triple_counter_state(ps->tec);
@@ -672,6 +839,15 @@ static int triple_netdev_open(struct net_device *dev)
   err = open_candev(dev);
   if (err)
     return err;
+  port->tx_full = false;
+  port->fc_valid = false;
+  /* until the first status: three quarters of an empty adapter buffer */
+  port->tx_cap = port->index < 2 ? TRIPLE_TX_BUFFER_CAN : TRIPLE_TX_BUFFER_FD;
+  port->fc_base = port->tx_cap * 3 / 4;
+  port->fc_rate = 0;
+  port->fc_stamp = jiffies;
+  port->tx_sent = 0;
+  port->ovf_valid = false;            /* the adapter's counter runs since power-up */
 
   if (port->index < 2)
   {
@@ -824,6 +1000,7 @@ static int triple_ldisc_open(struct tty_struct *tty)
 
   spin_lock_init(&a->lock);
   INIT_WORK(&a->tx_work, triple_transmit);
+  INIT_DELAYED_WORK(&a->fc_work, triple_fc_release);
   init_waitqueue_head(&a->xcmd_wait);
   a->tx_port = -1;
 
@@ -930,6 +1107,7 @@ static void triple_ldisc_close(struct tty_struct *tty)
     unregister_candev(a->devs[i]);
 
   flush_work(&a->tx_work);
+  cancel_delayed_work_sync(&a->fc_work);
 
   spin_lock_bh(&a->lock);
   tty->disc_data = NULL;

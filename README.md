@@ -130,9 +130,16 @@ adapter is plugged in (`etc/systemd/system/usb2can-triple@.service`).
   cycled. Module parameter `max_wire_len` raises the limit if a newer
   firmware allows it.
 * Sustained receive rate is limited by the adapter's USB side: roughly
-  2000 to 5000 frames/s per adapter (measured through usbipd into WSL2),
-  and the firmware drops silently beyond that. Transmit is only limited by
-  the bus. `hwtstamp=0` turns the adapter's receive timestamps off.
+  2000 to 5000 frames/s per adapter (measured through usbipd into WSL2).
+  Beyond that the firmware drops frames; the driver counts each overload
+  in `rx_over_errors` and sends a `CAN_ERR_CRTL_RX_OVERFLOW` error frame.
+  `hwtstamp=0` turns the adapter's receive timestamps off.
+* Transmit is paced by the adapter's buffer fill, reported every 250 ms,
+  so a slow or blocked bus holds the queue (`cangen` blocks, `cansend`
+  gets ENOBUFS) instead of the adapter dropping frames. Frames the adapter
+  dropped anyway are counted in `tx_dropped` with a
+  `CAN_ERR_CRTL_TX_OVERFLOW` error frame. A healthy 1 Mbit/s bus takes
+  about 2100 frames/s from one port (`doc/protocol.md` 5.1).
 * CAN1 and CAN2 only take the firmware's fixed bitrates; CAN3 takes any
   bit timing with `fd_bittiming=1` (see above).
 * The trigger/marker input and the firmware's bus-off indication are not

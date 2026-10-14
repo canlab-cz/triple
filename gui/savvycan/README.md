@@ -18,9 +18,13 @@ What the connection provides:
   error frame in the frame list on every bus state change (warning,
   passive, bus off, back to active) with TEC/REC in bytes 6 and 7;
 * the adapter's 100-byte message limit enforced on transmit;
+* frames the adapter lost (transmit buffer full, receive path
+  overloaded; status bytes 18 .. 23) as controller error frames with the
+  RX / TX overflow flag. The connection itself does not pace its sending,
+  so very fast periodic sending into a slow bus shows up there;
 * a Bus Statistics window (RE Tools menu): load % per bus with a graph,
-  frames/s, error frames, bus state with TEC/REC. It works with every
-  SavvyCAN connection, not only the Triple.
+  frames/s, error frames, overflows, bus state with TEC/REC. It works
+  with every SavvyCAN connection, not only the Triple.
 
 ![Bus Statistics window](../../doc/img/savvycan-bus-statistics.png)
 

@@ -67,6 +67,13 @@ kind, st = tp.decode(hx("0f 2a 8a 05 80 08 00 00 00 00 00 00 00 00 00 00 00 00 0
 check(kind == "status" and st.tec[0] == 0x80 and st.rec[0] == 8 and st.state[0] == 1 and st.tec[1] == 0, "status port 1 passive")
 kind, st = tp.decode(hx("0f 2a 8a 05 00 00 00 80 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 20 00 00 01 00 00 00 00 00 00 00 ef"))
 check(kind == "status" and st.rec[1] == 0x80 and st.state[1] == 1, "status port 2 passive")
+kind, st = tp.decode(hx("0f 2a 8a 05 f8 80 00 00 00 00 00 00 00 00 00 00 00 00 dc 00 00 00 00 00 a1 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 ef"))
+check(kind == "status" and st.tec[0] == 248 and st.tx_fill == [220, 0, 0] and st.tx_overflow == [161, 0, 0]
+      and st.rx_overload == [False] * 3 and st.can3_frames == 0, "status transmit buffer full, frames dropped")
+kind, st = tp.decode(hx("0f 2a 8a 05 00 00 00 00 00 00 00 00 00 00 b0 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ef"))
+check(kind == "status" and st.can3_frames == 1200, "status CAN3 frame count")
+kind, st = tp.decode(hx("0f 2a 8a 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ef"))
+check(kind == "status" and st.rx_overload == [True, False, False], "status receive overload")
 check(tp.decode(hx("0f 05 87 01 ef"))[0] == "unknown", "marker reported as unknown")
 try:
     tp.decode(hx("0f 09 a0 00 00 01 23 08 ef"))

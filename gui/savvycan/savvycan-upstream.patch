@@ -237,10 +237,10 @@ index 387a4fb..1053355 100644
  };
 diff --git a/connections/triple_proto.c b/connections/triple_proto.c
 new file mode 100755
-index 0000000..3330b33
+index 0000000..be46155
 --- /dev/null
 +++ b/connections/triple_proto.c
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,469 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +/*
@@ -383,6 +383,7 @@ index 0000000..3330b33
 +  u8 cmd;
 +  u8 flags;
 +  int idx;
++  int i;
 +
 +  if (n < 4 || n > TRIPLE_MTU || wire[0] != TRIPLE_FIRST_BYTE || wire[n - 1] != TRIPLE_LAST_BYTE)
 +    return -1;
@@ -411,6 +412,15 @@ index 0000000..3330b33
 +    m->status.port[0].state = p[29];
 +    m->status.port[1].state = p[30];
 +    m->status.port[2].state = p[31];
++    /* measured 2026-10-14, doc/protocol.md 5.1: transmit buffer fill 15..17,
++     * receive overload flags 18..20, transmit overflow counters 21..23 */
++    for (i = 0; i < TRIPLE_PORTS; i++)
++    {
++      m->status.port[i].tx_fill = p[15 + i];
++      m->status.port[i].rx_overload = p[18 + i] != 0;
++      m->status.port[i].tx_overflow = p[21 + i];
++    }
++    m->status.can3_frames = (u16)(p[11] | (p[12] << 8));
 +    return m->type;
 +
 +  case TRIPLE_CMD_FW_VER:
@@ -702,10 +712,10 @@ index 0000000..3330b33
 +}
 diff --git a/connections/triple_proto.h b/connections/triple_proto.h
 new file mode 100755
-index 0000000..217ac7c
+index 0000000..dc5e0be
 --- /dev/null
 +++ b/connections/triple_proto.h
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,263 @@
 +/* SPDX-License-Identifier: MIT */
 +/* Copyright (c) 2026 CANLAB s.r.o. */
 +/*
@@ -821,10 +831,20 @@ index 0000000..217ac7c
 +  u8 tec;
 +  u8 rec;
 +  u8 state;               /* 0 active, 1 passive seen; others unknown */
++  u8 tx_fill;             /* frames waiting in the adapter's transmit buffer */
++  u8 tx_overflow;         /* frames from the host dropped because that buffer was
++                             full, counter modulo 256 since power-up */
++  bool rx_overload;       /* CAN1/CAN2: receive overload during the last period,
++                             frames may have been lost (CAN3 never set it in tests) */
 +};
++
++/* Transmit buffer size per port, as reported in tx_fill when full. */
++#define TRIPLE_TX_BUFFER_CAN   220
++#define TRIPLE_TX_BUFFER_FD    120
 +
 +struct triple_status {
 +  struct triple_port_status port[TRIPLE_PORTS];
++  u16 can3_frames;        /* frames on CAN3 (received or sent) in the last period */
 +  u8 raw[TRIPLE_STATUS_LEN];
 +};
 +
@@ -961,10 +981,10 @@ index 0000000..217ac7c
 +#endif /* TRIPLE_PROTO_H */
 diff --git a/connections/triple_serial.cpp b/connections/triple_serial.cpp
 new file mode 100755
-index 0000000..8e47b75
+index 0000000..3442419
 --- /dev/null
 +++ b/connections/triple_serial.cpp
-@@ -0,0 +1,592 @@
+@@ -0,0 +1,622 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#include <QDebug>
@@ -1005,7 +1025,9 @@ index 0000000..8e47b75
 +    {
 +        lastTec[i] = lastRec[i] = lastState[i] = 0;
 +        busState[i] = 0;
++        lastOverflow[i] = 0;
 +    }
++    overflowValid = false;
 +
 +    /* defaults matching the Linux driver's README: 250k, 500k, FD 125k / 6.7M */
 +    CANBus bus;
@@ -1116,6 +1138,7 @@ index 0000000..8e47b75
 +    tsHaveBase = false;
 +    memset(&tsExt, 0, sizeof(tsExt));
 +    fwVersion.clear();
++    overflowValid = false;          /* the adapter's counters run since power-up */
 +
 +    uint8_t cmd[64];
 +    int n;
@@ -1484,9 +1507,28 @@ index 0000000..8e47b75
 +void TripleSerial::handleStatus(const triple_status &st)
 +{
 +    static const char *stateName[] = { "error active", "error warning", "error passive", "bus off" };
++    enum { CRTL_RX_OVERFLOW = 0x01, CRTL_TX_OVERFLOW = 0x02 };
 +    for (int i = 0; i < TRIPLE_PORTS; i++)
 +    {
 +        const triple_port_status &ps = st.port[i];
++
++        /* frames lost in the adapter (doc/protocol.md 5.1): the transmit
++         * buffer was full (the connection does not pace its sending), or
++         * the path toward the host was overloaded */
++        uint8_t lost = overflowValid ? (uint8_t)(ps.tx_overflow - lastOverflow[i]) : 0;
++        lastOverflow[i] = ps.tx_overflow;
++        if (lost)
++        {
++            sendDebug("Triple: CAN" + QString::number(i + 1) + " transmit buffer full, " +
++                      QString::number(lost) + " frames dropped");
++            queueControllerFrame(i, CRTL_TX_OVERFLOW, false, ps.tec, ps.rec);
++        }
++        if (ps.rx_overload)
++        {
++            sendDebug("Triple: CAN" + QString::number(i + 1) + " receive overload, frames lost");
++            queueControllerFrame(i, CRTL_RX_OVERFLOW, false, ps.tec, ps.rec);
++        }
++
 +        if (ps.tec == lastTec[i] && ps.rec == lastRec[i] && ps.state == lastState[i])
 +            continue;
 +        lastTec[i] = ps.tec;
@@ -1502,6 +1544,7 @@ index 0000000..8e47b75
 +            busState[i] = s;
 +        }
 +    }
++    overflowValid = true;
 +}
 +
 +/* Error frame in SocketCAN layout (linux/can/error.h), which SavvyCAN
@@ -1523,6 +1566,13 @@ index 0000000..8e47b75
 +    default: break;
 +    }
 +    Q_UNUSED(oldState);
++    queueControllerFrame(port, ctrl, state == 3, tec, rec);
++}
++
++void TripleSerial::queueControllerFrame(int port, uint8_t ctrl, bool busOff, uint8_t tec, uint8_t rec)
++{
++    if (isCapSuspended())
++        return;
 +
 +    QByteArray data(8, 0);
 +    data[1] = (char)ctrl;
@@ -1531,7 +1581,7 @@ index 0000000..8e47b75
 +
 +    TripleGuiFrame frame;
 +    frame.setFrameType(TripleGuiFrame::ErrorFrame);
-+    frame.setError(state == 3 ? TripleGuiFrame::BusOffError : TripleGuiFrame::ControllerError);
++    frame.setError(busOff ? TripleGuiFrame::BusOffError : TripleGuiFrame::ControllerError);
 +#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 +    frame.setBus(port);
 +    frame.setReceived(true);
@@ -1559,10 +1609,10 @@ index 0000000..8e47b75
 +}
 diff --git a/connections/triple_serial.h b/connections/triple_serial.h
 new file mode 100755
-index 0000000..a38dc90
+index 0000000..30d0cce
 --- /dev/null
 +++ b/connections/triple_serial.h
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,93 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#ifndef TRIPLE_SERIAL_H
@@ -1630,6 +1680,7 @@ index 0000000..a38dc90
 +    qint64 adapterTimeToMicros(uint32_t ts);
 +    qint64 hostTimeToMicros();
 +    void queueErrorFrame(int port, int state, int oldState, uint8_t tec, uint8_t rec);
++    void queueControllerFrame(int port, uint8_t ctrl, bool busOff, uint8_t tec, uint8_t rec);
 +
 +    QSerialPort *serial;
 +
@@ -1649,6 +1700,8 @@ index 0000000..a38dc90
 +    uint8_t  lastRec[TRIPLE_PORTS];
 +    uint8_t  lastState[TRIPLE_PORTS];
 +    int      busState[TRIPLE_PORTS];  /* 0 active, 1 warning, 2 passive, 3 bus off */
++    uint8_t  lastOverflow[TRIPLE_PORTS];  /* adapter's transmit overflow counters (mod 256) */
++    bool     overflowValid;              /* lastOverflow holds a status of this connection */
 +    QString  fwVersion;
 +};
 +
@@ -3820,10 +3873,10 @@ index 0000000..4efe83b
 +#endif // AITOOLS_H
 diff --git a/re/busstatswindow.cpp b/re/busstatswindow.cpp
 new file mode 100755
-index 0000000..f924341
+index 0000000..599c122
 --- /dev/null
 +++ b/re/busstatswindow.cpp
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,274 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#include "busstatswindow.h"
@@ -3846,7 +3899,7 @@ index 0000000..f924341
 +const QColor PALETTE[] = { QColor(0x1f, 0x77, 0xb4), QColor(0xff, 0x7f, 0x0e), QColor(0x2c, 0xa0, 0x2c),
 +                           QColor(0xd6, 0x27, 0x28), QColor(0x94, 0x67, 0xbd), QColor(0x8c, 0x56, 0x4b) };
 +
-+enum Col { C_BUS, C_NOMINAL, C_DATA, C_RATE, C_LOAD, C_PEAK, C_FRAMES, C_ERRORS, C_STATE, C_TEC, C_REC, C_COUNT };
++enum Col { C_BUS, C_NOMINAL, C_DATA, C_RATE, C_LOAD, C_PEAK, C_FRAMES, C_ERRORS, C_OVERFLOWS, C_STATE, C_TEC, C_REC, C_COUNT };
 +
 +inline int frameBus(const BusStatsFrame &f)
 +{
@@ -3873,7 +3926,7 @@ index 0000000..f924341
 +
 +    table = new QTableWidget(0, C_COUNT, this);
 +    table->setHorizontalHeaderLabels({ tr("Bus"), tr("Bitrate"), tr("Data rate"), tr("Frames/s"), tr("Load %"),
-+                                       tr("Peak %"), tr("Frames"), tr("Errors"), tr("State"), tr("TEC"), tr("REC") });
++                                       tr("Peak %"), tr("Frames"), tr("Errors"), tr("Overflows"), tr("State"), tr("TEC"), tr("REC") });
 +    table->verticalHeader()->setVisible(false);
 +    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
 +    table->setSelectionMode(QAbstractItemView::NoSelection);
@@ -3991,6 +4044,8 @@ index 0000000..f924341
 +            else if (d.size() >= 2)
 +            {
 +                quint8 ctrl = quint8(d[1]);
++                if (ctrl & 0x03)                               /* RX / TX buffer overflow */
++                    b.overflows++;
 +                if (ctrl & 0x40) b.state = 0;                  /* back to error active */
 +                else if (ctrl & 0x30) b.state = 2;             /* RX / TX passive */
 +                else if (ctrl & 0x0C) b.state = 1;             /* RX / TX warning */
@@ -4060,6 +4115,7 @@ index 0000000..f924341
 +            b.nominal ? QString::number(b.peak, 'f', 1) : QString("?"),
 +            QString::number(b.frames),
 +            QString::number(b.errors),
++            QString::number(b.overflows),
 +            b.state < 0 ? QString("-") : QString(STATE_NAMES[b.state]),
 +            b.tec < 0 ? QString("-") : QString::number(b.tec),
 +            b.rec < 0 ? QString("-") : QString::number(b.rec),
@@ -4097,10 +4153,10 @@ index 0000000..f924341
 +}
 diff --git a/re/busstatswindow.h b/re/busstatswindow.h
 new file mode 100755
-index 0000000..3dd82ec
+index 0000000..13855b2
 --- /dev/null
 +++ b/re/busstatswindow.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,83 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#ifndef BUSSTATSWINDOW_H
@@ -4157,6 +4213,7 @@ index 0000000..3dd82ec
 +        quint32 data = 0;           /* CAN FD data phase bit/s, 0 = none */
 +        quint64 frames = 0;
 +        quint64 errors = 0;
++        quint64 overflows = 0;      /* error frames reporting lost frames (controller RX/TX overflow) */
 +        quint64 intervalFrames = 0;
 +        double  intervalBusy = 0;   /* seconds of bus time in this interval */
 +        double  load = 0;

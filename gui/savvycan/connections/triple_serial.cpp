@@ -38,7 +38,9 @@ TripleSerial::TripleSerial(QString portName) :
     {
         lastTec[i] = lastRec[i] = lastState[i] = 0;
         busState[i] = 0;
+        lastOverflow[i] = 0;
     }
+    overflowValid = false;
 
     /* defaults matching the Linux driver's README: 250k, 500k, FD 125k / 6.7M */
     CANBus bus;
@@ -149,6 +151,7 @@ void TripleSerial::connectDevice()
     tsHaveBase = false;
     memset(&tsExt, 0, sizeof(tsExt));
     fwVersion.clear();
+    overflowValid = false;          /* the adapter's counters run since power-up */
 
     uint8_t cmd[64];
     int n;
@@ -517,9 +520,28 @@ static int busStateFrom(const triple_port_status &ps)
 void TripleSerial::handleStatus(const triple_status &st)
 {
     static const char *stateName[] = { "error active", "error warning", "error passive", "bus off" };
+    enum { CRTL_RX_OVERFLOW = 0x01, CRTL_TX_OVERFLOW = 0x02 };
     for (int i = 0; i < TRIPLE_PORTS; i++)
     {
         const triple_port_status &ps = st.port[i];
+
+        /* frames lost in the adapter (doc/protocol.md 5.1): the transmit
+         * buffer was full (the connection does not pace its sending), or
+         * the path toward the host was overloaded */
+        uint8_t lost = overflowValid ? (uint8_t)(ps.tx_overflow - lastOverflow[i]) : 0;
+        lastOverflow[i] = ps.tx_overflow;
+        if (lost)
+        {
+            sendDebug("Triple: CAN" + QString::number(i + 1) + " transmit buffer full, " +
+                      QString::number(lost) + " frames dropped");
+            queueControllerFrame(i, CRTL_TX_OVERFLOW, false, ps.tec, ps.rec);
+        }
+        if (ps.rx_overload)
+        {
+            sendDebug("Triple: CAN" + QString::number(i + 1) + " receive overload, frames lost");
+            queueControllerFrame(i, CRTL_RX_OVERFLOW, false, ps.tec, ps.rec);
+        }
+
         if (ps.tec == lastTec[i] && ps.rec == lastRec[i] && ps.state == lastState[i])
             continue;
         lastTec[i] = ps.tec;
@@ -535,6 +557,7 @@ void TripleSerial::handleStatus(const triple_status &st)
             busState[i] = s;
         }
     }
+    overflowValid = true;
 }
 
 /* Error frame in SocketCAN layout (linux/can/error.h), which SavvyCAN
@@ -556,6 +579,13 @@ void TripleSerial::queueErrorFrame(int port, int state, int oldState, uint8_t te
     default: break;
     }
     Q_UNUSED(oldState);
+    queueControllerFrame(port, ctrl, state == 3, tec, rec);
+}
+
+void TripleSerial::queueControllerFrame(int port, uint8_t ctrl, bool busOff, uint8_t tec, uint8_t rec)
+{
+    if (isCapSuspended())
+        return;
 
     QByteArray data(8, 0);
     data[1] = (char)ctrl;
@@ -564,7 +594,7 @@ void TripleSerial::queueErrorFrame(int port, int state, int oldState, uint8_t te
 
     TripleGuiFrame frame;
     frame.setFrameType(TripleGuiFrame::ErrorFrame);
-    frame.setError(state == 3 ? TripleGuiFrame::BusOffError : TripleGuiFrame::ControllerError);
+    frame.setError(busOff ? TripleGuiFrame::BusOffError : TripleGuiFrame::ControllerError);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     frame.setBus(port);
     frame.setReceived(true);

@@ -54,6 +54,7 @@ private:
         quint32 data = 0;           /* CAN FD data phase bit/s, 0 = none */
         quint64 frames = 0;
         quint64 errors = 0;
+        quint64 overflows = 0;      /* error frames reporting lost frames (controller RX/TX overflow) */
         quint64 intervalFrames = 0;
         double  intervalBusy = 0;   /* seconds of bus time in this interval */
         double  load = 0;

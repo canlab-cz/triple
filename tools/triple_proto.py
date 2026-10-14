@@ -80,6 +80,10 @@ class Status:
     tec: List[int] = field(default_factory=lambda: [0, 0, 0])
     rec: List[int] = field(default_factory=lambda: [0, 0, 0])
     state: List[int] = field(default_factory=lambda: [0, 0, 0])   # 0 active, 1 passive seen
+    tx_fill: List[int] = field(default_factory=lambda: [0, 0, 0])     # frames in the transmit buffer
+    rx_overload: List[bool] = field(default_factory=lambda: [False, False, False])
+    tx_overflow: List[int] = field(default_factory=lambda: [0, 0, 0])  # frames dropped, mod 256
+    can3_frames: int = 0                                               # CAN3 frames in the last 250 ms
     raw: bytes = b""
 
 
@@ -154,6 +158,10 @@ def decode(wire: bytes) -> Tuple[str, object]:
         st.tec = [p[1], p[3], p[5]]
         st.rec = [p[2], p[4], p[6]]
         st.state = [p[29], p[30], p[31]]
+        st.tx_fill = [p[15], p[16], p[17]]
+        st.rx_overload = [p[18] != 0, p[19] != 0, p[20] != 0]
+        st.tx_overflow = [p[21], p[22], p[23]]
+        st.can3_frames = p[11] | (p[12] << 8)
         return "status", st
 
     if cmd == CMD_FW_VER:

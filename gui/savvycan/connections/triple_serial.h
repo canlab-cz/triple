@@ -65,6 +65,7 @@ private:
     qint64 adapterTimeToMicros(uint32_t ts);
     qint64 hostTimeToMicros();
     void queueErrorFrame(int port, int state, int oldState, uint8_t tec, uint8_t rec);
+    void queueControllerFrame(int port, uint8_t ctrl, bool busOff, uint8_t tec, uint8_t rec);
 
     QSerialPort *serial;
 
@@ -84,6 +85,8 @@ private:
     uint8_t  lastRec[TRIPLE_PORTS];
     uint8_t  lastState[TRIPLE_PORTS];
     int      busState[TRIPLE_PORTS];  /* 0 active, 1 warning, 2 passive, 3 bus off */
+    uint8_t  lastOverflow[TRIPLE_PORTS];  /* adapter's transmit overflow counters (mod 256) */
+    bool     overflowValid;              /* lastOverflow holds a status of this connection */
     QString  fwVersion;
 };
 

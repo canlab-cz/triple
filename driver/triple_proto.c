@@ -140,6 +140,7 @@ int triple_decode(const u8 *wire, size_t n, struct triple_msg *m)
   u8 cmd;
   u8 flags;
   int idx;
+  int i;
 
   if (n < 4 || n > TRIPLE_MTU || wire[0] != TRIPLE_FIRST_BYTE || wire[n - 1] != TRIPLE_LAST_BYTE)
     return -1;
@@ -168,6 +169,15 @@ int triple_decode(const u8 *wire, size_t n, struct triple_msg *m)
     m->status.port[0].state = p[29];
     m->status.port[1].state = p[30];
     m->status.port[2].state = p[31];
+    /* measured 2026-10-14, doc/protocol.md 5.1: transmit buffer fill 15..17,
+     * receive overload flags 18..20, transmit overflow counters 21..23 */
+    for (i = 0; i < TRIPLE_PORTS; i++)
+    {
+      m->status.port[i].tx_fill = p[15 + i];
+      m->status.port[i].rx_overload = p[18 + i] != 0;
+      m->status.port[i].tx_overflow = p[21 + i];
+    }
+    m->status.can3_frames = (u16)(p[11] | (p[12] << 8));
     return m->type;
 
   case TRIPLE_CMD_FW_VER:

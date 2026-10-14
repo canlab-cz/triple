@@ -113,10 +113,20 @@ struct triple_port_status {
   u8 tec;
   u8 rec;
   u8 state;               /* 0 active, 1 passive seen; others unknown */
+  u8 tx_fill;             /* frames waiting in the adapter's transmit buffer */
+  u8 tx_overflow;         /* frames from the host dropped because that buffer was
+                             full, counter modulo 256 since power-up */
+  bool rx_overload;       /* CAN1/CAN2: receive overload during the last period,
+                             frames may have been lost (CAN3 never set it in tests) */
 };
+
+/* Transmit buffer size per port, as reported in tx_fill when full. */
+#define TRIPLE_TX_BUFFER_CAN   220
+#define TRIPLE_TX_BUFFER_FD    120
 
 struct triple_status {
   struct triple_port_status port[TRIPLE_PORTS];
+  u16 can3_frames;        /* frames on CAN3 (received or sent) in the last period */
   u8 raw[TRIPLE_STATUS_LEN];
 };
 

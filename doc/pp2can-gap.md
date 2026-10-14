@@ -56,7 +56,7 @@ or missing details, **no** = not available.
 | ID trap (IDs and counts on the bus) | Frame Data Analysis, Overwrite Mode | yes | |
 | Timing accuracy (period per ID) | Frame Data Analysis | yes | Shows interval statistics per ID |
 | Response meter | Response Meter (added) | yes | Watch mode from hardware timestamps, send mode with periodic requests |
-| Bus load graph with BusOff, TEC/REC, overflow counts | Bus Statistics window (added) | yes | Load % per bus with graph, frames/s, error frames, state and TEC/REC; overflow count still needs the firmware's status layout |
+| Bus load graph with BusOff, TEC/REC, overflow counts | Bus Statistics window (added) | yes | Load % per bus with graph, frames/s, error frames, overflows (frames the adapter lost, from status bytes 18 .. 23), state and TEC/REC |
 | Table reader, Data view | Frame Info, Flow View | yes | |
 | Set / Get number | DBC signal editor | partial | |
 | CAN calculator (29-bit, 11+18, MCP2510, SJA1000 registers) | CAN Calculator (added) | yes | All directions |
@@ -93,6 +93,4 @@ Blocked on the firmware source (see `doc/protocol.md`):
 
 * **HW sync**: adapter-timed periodic transmit needs its command layout.
 * **Markers**: trigger input events (`0x87`) and F1..F8 markers in the log.
-* **Overflow counter**: which status byte counts dropped frames
-  (byte 14 looks like a buffer fill level).
 * **Bus off**: the encoding of bus off in the status message.

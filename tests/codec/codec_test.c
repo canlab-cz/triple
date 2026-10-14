@@ -131,6 +131,22 @@ static void captured(void)
   type = triple_decode(wire, n, &m);
   CHECK(type == TRIPLE_MSG_STATUS && m.status.port[1].rec == 0x80 && m.status.port[1].state == 1);
 
+  /* captured 2026-10-14 while CAN1 sent into a bus where nobody ACKs: TEC 248,
+   * REC 128, passive, transmit buffer full (220), 161 dropped frames (mod 256) */
+  n = parse_hex("0f 2a 8a 05 f8 80 00 00 00 00 00 00 00 00 00 00 00 00 dc 00 00 00 00 00 a1 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 ef", wire);
+  type = triple_decode(wire, n, &m);
+  CHECK(type == TRIPLE_MSG_STATUS && m.status.port[0].tec == 248 && m.status.port[0].rec == 128 && m.status.port[0].state == 1);
+  CHECK(m.status.port[0].tx_fill == 220 && m.status.port[0].tx_overflow == 161 && !m.status.port[0].rx_overload);
+  CHECK(m.status.port[1].tx_fill == 0 && m.status.port[2].tx_overflow == 0 && m.status.can3_frames == 0);
+  /* CAN3 under receive load: 1200 frames in the last 250 ms */
+  n = parse_hex("0f 2a 8a 05 00 00 00 00 00 00 00 00 00 00 b0 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ef", wire);
+  type = triple_decode(wire, n, &m);
+  CHECK(type == TRIPLE_MSG_STATUS && m.status.can3_frames == 1200);
+  /* CAN1 saturated at 1 Mbit/s: receive overload flag */
+  n = parse_hex("0f 2a 8a 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ef", wire);
+  type = triple_decode(wire, n, &m);
+  CHECK(type == TRIPLE_MSG_STATUS && m.status.port[0].rx_overload && !m.status.port[1].rx_overload);
+
   /* unsupported command (marker) is reported, not misdecoded */
   n = parse_hex("0f 05 87 01 ef", wire);
   CHECK(triple_decode(wire, n, &m) == -2);

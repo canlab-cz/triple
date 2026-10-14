@@ -266,8 +266,9 @@ The adapter never echoes transmitted frames back.
 ### 5.1 STATUS (0x8A)
 
 Sent unsolicited every 250 ms. 38 payload bytes, 42 bytes on the wire
-(`0F 2A 8A ... EF`). Known content (*verified* by forcing errors per port
-with mismatched bitrates):
+(`0F 2A 8A ... EF`). Byte numbers count from the first payload byte.
+Known content (*verified* by forcing errors per port with mismatched
+bitrates, and by burst tests against a blocked and a healthy bus):
 
 | Byte | Content |
 |---|---|
@@ -278,21 +279,71 @@ with mismatched bitrates):
 | 4 | CAN2 REC |
 | 5 | CAN3 TEC (*probable*: 0x08 seen while CAN3 transmitted without ACK) |
 | 6 | CAN3 REC (*probable*: 0x40 at the same time) |
-| 7 | CAN3 flags, 0x40 / 0x83 / 0x87 seen during CAN3 errors (*unknown bit meaning*) |
+| 7 | CAN3 flags, 0x1D / 0x28 / 0x2E / 0x40 / 0x83 / 0x87 seen during CAN3 errors (*unknown bit meaning*) |
 | 8 | 0x01 seen during CAN3 errors |
-| 11 | 1 for one status period right after the host transmitted on CAN3, else 0 (*probable*: CAN3 transmit queue count) |
+| 11-12 | frames on CAN3 in the last status period, little endian u16, both directions (*verified*: 1200 = `B0 04` at 4800 frames/s) |
 | 13 | 0x12 / 0x14 seen during CAN3 errors |
-| 14 | rises to ~0xDC on the receiving adapter while its buffer toward the host overflows, 0 at idle (*probable*: buffer fill level) |
-| 21 | changes continuously under receive load (*probable*: low byte of a frame counter) |
+| 15 | CAN1 transmit buffer fill in frames, 220 = full (*verified*) |
+| 16 | CAN2 transmit buffer fill, same (*verified*) |
+| 17 | CAN3 transmit buffer fill. The buffer holds 120 classic frames, about 102 24-byte FD frames (*verified*) |
+| 18 | CAN1 receive overload: nonzero when frames toward the host were lost in the period (1 .. 4 seen) (*verified*) |
+| 19 | CAN2 receive overload, same (*verified*) |
+| 20 | CAN3 receive overload (*assumed* by position: CAN3 never lost frames in the tests) |
+| 21 | CAN1 transmit overflow counter: host frames dropped because the transmit buffer was full, mod 256, since power-up (*verified*: equals the frames sent minus the frames received on the other side in burst tests) |
+| 22 | CAN2 transmit overflow counter, same (*verified*) |
+| 23 | CAN3 transmit overflow counter, same (*verified*) |
 | 27 | 0x10, 0x13, 0x20, 0x30 observed, slowly rising over an hour (temperature? uptime?) |
 | 29 | CAN1 state: 0 error active, 1 error passive (*verified*); bus off not observed |
 | 30 | CAN2 state, same encoding |
 | 31 | CAN3 state, same encoding (*probable*, stayed 0 in the tests) |
 | others | 0 in every capture |
 
+Earlier notes put a buffer level at byte 14 and a frame counter at byte
+21 on the receiving adapter. Neither showed up again: they were the
+transmitting adapter's bytes 15 and 21.
+
 Observed sequences (sender without ACK, 250 ms apart): TEC `0x80` with
 state 1, then TEC `0x80` REC `0x10`, then both 0 and state 0 again. The
-controller recovers on its own.
+controller recovers on its own. With a bitrate mismatch and continuous
+sending, both sides end error passive with TEC 248 / REC 128 and stay
+there. Bus off could not be provoked without a physical fault.
+
+#### Transmit flow control
+
+The adapter accepts frames from the host faster than any bus takes them,
+and drops what does not fit into the transmit buffer (bytes 21 .. 23
+count them). The driver therefore keeps the queue of a port within the
+buffer:
+
+* until the first status: three quarters of an empty buffer;
+* after each status: up to three quarters of the buffer at once
+  (3/4 capacity - fill), plus three quarters of what the bus drained in
+  the last period (last fill + frames sent - frames dropped - fill),
+  released evenly over the next 250 ms.
+* The capacity of the CAN3 buffer depends on the frame sizes. The driver
+  learns it from the fill at which frames were dropped (not below half
+  the nominal size).
+
+Two first versions lost frames. Releasing the drained share at once
+overflowed the buffer in the middle of the period, because the USB link
+is faster than the bus. Filling the buffer up to 10 frames short of full
+lost 16 frames on a 250 kbit/s bus at 95 % load, whose drain rate varied
+by 20 % between periods.
+
+Measured with firmware 1.41 through usbipd: 0 frames dropped out of
+2000 .. 10000 per run in these cases:
+
+* a blocked CAN1;
+* a blocked CAN3 with 8, 24 and 64-byte FD frames;
+* a healthy CAN1 at 1 Mbit/s, about 2100 frames/s, including the first
+  run after loading the module;
+* CAN1 at 250 kbit/s with the bus full.
+
+Before, the adapter dropped everything beyond 220 frames on a blocked
+bus. The cost is throughput: the first version, which filled the buffer
+further, reached about 2600 frames/s at 1 Mbit/s. Dropped frames
+still count as `tx_dropped` with a `CAN_ERR_CRTL_TX_OVERFLOW` error frame,
+and receive overloads as `rx_over_errors` with `CAN_ERR_CRTL_RX_OVERFLOW`.
 
 ## 6. Behaviour notes
 
@@ -302,7 +353,8 @@ controller recovers on its own.
   effect immediately.
 * Receive rate toward the host saturates between about 2000 and 5000
   frames/s per adapter (measured through usbipd into WSL2); beyond that the
-  firmware drops frames silently. Transmit is limited by the bus only.
+  firmware drops frames (bytes 18 .. 20 of the status flag it). Transmit
+  is limited by the bus and the transmit buffer (5.1).
 * With a single other node in listen-only mode (no ACK), the adapter keeps
   retransmitting the frame indefinitely, as CAN requires.
 * A message longer than the firmware's buffer locks the host-to-bus path

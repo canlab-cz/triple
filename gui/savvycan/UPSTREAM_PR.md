@@ -16,6 +16,7 @@ has ten commits:
 | `a5f04bf` | Triple: CAN3 bitrate pairs outside the firmware table as raw timing |
 | `6ffd6aa` | Add Signal Finder and AI Assistant windows (reverse engineering; can be left out or split) |
 | `24d6c0b` | CANopen window: SDO block transfer and LSS |
+| `f2d0908` | Triple: report frames lost in the adapter; Overflows in Bus Statistics |
 
 They can go in one PR or as separate ones; only the first commit is
 specific to the Triple, the tool windows and the PP2CAN log format work

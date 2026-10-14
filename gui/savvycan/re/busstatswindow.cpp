@@ -20,7 +20,7 @@ const char *STATE_NAMES[] = { "error active", "error warning", "error passive", 
 const QColor PALETTE[] = { QColor(0x1f, 0x77, 0xb4), QColor(0xff, 0x7f, 0x0e), QColor(0x2c, 0xa0, 0x2c),
                            QColor(0xd6, 0x27, 0x28), QColor(0x94, 0x67, 0xbd), QColor(0x8c, 0x56, 0x4b) };
 
-enum Col { C_BUS, C_NOMINAL, C_DATA, C_RATE, C_LOAD, C_PEAK, C_FRAMES, C_ERRORS, C_STATE, C_TEC, C_REC, C_COUNT };
+enum Col { C_BUS, C_NOMINAL, C_DATA, C_RATE, C_LOAD, C_PEAK, C_FRAMES, C_ERRORS, C_OVERFLOWS, C_STATE, C_TEC, C_REC, C_COUNT };
 
 inline int frameBus(const BusStatsFrame &f)
 {
@@ -47,7 +47,7 @@ BusStatsWindow::BusStatsWindow(QWidget *parent) : QWidget(parent, Qt::Window)
 
     table = new QTableWidget(0, C_COUNT, this);
     table->setHorizontalHeaderLabels({ tr("Bus"), tr("Bitrate"), tr("Data rate"), tr("Frames/s"), tr("Load %"),
-                                       tr("Peak %"), tr("Frames"), tr("Errors"), tr("State"), tr("TEC"), tr("REC") });
+                                       tr("Peak %"), tr("Frames"), tr("Errors"), tr("Overflows"), tr("State"), tr("TEC"), tr("REC") });
     table->verticalHeader()->setVisible(false);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionMode(QAbstractItemView::NoSelection);
@@ -165,6 +165,8 @@ void BusStatsWindow::framesReceived(CANConnection *conn, QVector<BusStatsFrame> 
             else if (d.size() >= 2)
             {
                 quint8 ctrl = quint8(d[1]);
+                if (ctrl & 0x03)                               /* RX / TX buffer overflow */
+                    b.overflows++;
                 if (ctrl & 0x40) b.state = 0;                  /* back to error active */
                 else if (ctrl & 0x30) b.state = 2;             /* RX / TX passive */
                 else if (ctrl & 0x0C) b.state = 1;             /* RX / TX warning */
@@ -234,6 +236,7 @@ void BusStatsWindow::updateTable()
             b.nominal ? QString::number(b.peak, 'f', 1) : QString("?"),
             QString::number(b.frames),
             QString::number(b.errors),
+            QString::number(b.overflows),
             b.state < 0 ? QString("-") : QString(STATE_NAMES[b.state]),
             b.tec < 0 ? QString("-") : QString::number(b.tec),
             b.rec < 0 ? QString("-") : QString::number(b.rec),

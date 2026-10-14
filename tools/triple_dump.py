@@ -132,7 +132,9 @@ def main() -> int:
                 elif kind == "status":
                     if args.status and msg.raw != last_status:
                         last_status = msg.raw
-                        print("status tec %s rec %s state %s raw %s" % (msg.tec, msg.rec, msg.state, msg.raw.hex(" ")))
+                        print("status tec %s rec %s state %s tx buffer %s dropped %s rx overload %s raw %s"
+                              % (msg.tec, msg.rec, msg.state, msg.tx_fill, msg.tx_overflow,
+                                 [int(o) for o in msg.rx_overload], msg.raw.hex(" ")))
                 else:
                     print("unknown command 0x%02X: %s" % (msg, wire.hex(" ")))
     except KeyboardInterrupt:
