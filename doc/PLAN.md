@@ -114,7 +114,9 @@ Decision 2026-10-14: build on SavvyCAN (MIT, Qt). First milestone done the same 
 - [x] Three buses per adapter, bitrates / listen-only / FD data rate / non-ISO from the connection window, adapters listed first in the port list by USB id, 100-byte wire limit enforced, error counters and firmware version in the device console.
 - [x] Receive with the adapter's hardware timestamps mapped onto SavvyCAN's manager-relative clock (103 ms spacing shown for 100 ms sends), transmit through the frame sender (13 of 13 frames at 200 ms received by the kernel driver on the second adapter), CAN FD frame on bus 2, extended ids.
 - [x] Built with Qt 5.15 on Ubuntu 22.04 under WSL2 and exercised on the WSLg display with xdotool-driven screenshots (`doc/img/savvycan-triple.png`).
-- [ ] Windows build and test (Qt 5.15 + MSVC/MinGW, port `COMx`); the code has no Linux-specific parts.
+- [x] Windows build: SavvyCAN's `QT6WIP` branch with Qt 6.8.1 / MinGW 13.1 on Windows 11; `apply.py` handles the CMake source list and the branch's own FD-capable flag, a typedef layer covers `CANFrame` (master) versus `CommFrame` (QT6WIP).
+- [x] Fixed a crash found on Windows: `QSerialPort::open()` emits its error signal synchronously, the error slot deleted the port, and the caller then dereferenced it. The error signal is now connected only after a successful open. Removed an unused timer that triggered a cross-thread parent warning.
+- [ ] Windows end-to-end traffic test: adapter B needs a physical replug after its usbipd round trip (Windows could not open it, semaphore timeout, also from .NET).
 - [ ] Bus-off / error frames into SavvyCAN's frame list (currently console only), marker input, status fields once the firmware source clarifies them.
 - [ ] Upstream pull request to collin80/SavvyCAN once the Windows build is confirmed.
 - [ ] PP2CAN feature gap review: what SavvyCAN already covers (logs, DBC, graphs, replay, sender, scripting, ISO-TP/UDS) versus what needs adding (CANopen tools, reply maker, gateway, HW sync).

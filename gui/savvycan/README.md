@@ -24,9 +24,17 @@ git clone https://github.com/collin80/SavvyCAN
 python3 gui/savvycan/apply.py SavvyCAN     # copies the sources, edits 8 upstream files
 ```
 
-`apply.py` is idempotent. It was written against upstream commit
-`e439670` (October 2026); `savvycan-upstream.patch` is the same change as
-a plain diff for reference or for a pull request upstream.
+`apply.py` is idempotent and works on both upstream lines:
+
+| Upstream | Qt | Build system | Tested commit |
+|---|---|---|---|
+| `master` | 5.15 | qmake | `e439670` (Linux, WSL2) |
+| `QT6WIP` branch | 6.8 | CMake | `3288f1f` (Windows 11, MinGW) |
+
+The connection code compiles against either: master passes `CANFrame`
+(a `QCanBusFrame`), QT6WIP its own `CommFrame`, and a small typedef layer
+in `triple_serial.h` covers the difference. `savvycan-upstream.patch` is
+the change against master as a plain diff.
 
 Files added to `SavvyCAN/connections/`:
 
@@ -47,9 +55,21 @@ qmake ../SavvyCAN.pro CONFIG+=release && make -j$(nproc)
 ./SavvyCAN
 ```
 
-Windows: install Qt 5.15 with the SerialBus and SerialPort modules and
-build `SavvyCAN.pro` from Qt Creator or with `qmake && nmake`/`mingw32-make`
-exactly as upstream describes; the adapter appears as `COMx`.
+Windows (Qt 6.8 with the MinGW 13.1 kit and the SerialBus / SerialPort
+modules, as installed by the Qt online installer):
+
+```bat
+git clone --branch QT6WIP https://github.com/collin80/SavvyCAN
+python gui\savvycan\apply.py SavvyCAN
+set PATH=C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\Ninja;C:\Qt\Tools\CMake_64\bin;C:\Qt\6.8.1\mingw_64\bin;%PATH%
+cmake -S SavvyCAN -B SavvyCAN\build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/6.8.1/mingw_64
+cmake --build SavvyCAN\build -j 16
+SavvyCAN\build\SavvyCAN.exe
+```
+
+To run it outside that shell, collect the Qt DLLs next to the executable
+with `windeployqt SavvyCAN.exe`. The adapter appears as `COMx` and uses
+Windows' built-in `usbser.sys` driver, so nothing needs installing.
 
 ## Use
 
