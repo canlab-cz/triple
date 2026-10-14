@@ -105,6 +105,23 @@ typedef struct
   
 } TRIPLE_CAN_FRAME;
 
+/* Unescape a complete wire frame: the first two bytes (start byte and raw
+ * length) are copied as they are, escapes are resolved from byte 2 on.
+ * Returns the unescaped length. */
+inline static size_t escape_memcpy(void *dest, const void *src, size_t n);
+inline static size_t triple_unescape_frame(unsigned char *dest, const unsigned char *src, size_t n)
+{
+  if (n < 2)
+  {
+    if (n)
+      dest[0] = src[0];
+    return n;
+  }
+  dest[0] = src[0];
+  dest[1] = src[1];
+  return 2 + escape_memcpy(dest + 2, src + 2, n - 2);
+}
+
 /* Copy n escaped bytes from src to dest, dropping the escape markers.
  * Returns the number of bytes written to dest (<= n). */
 inline static size_t escape_memcpy(void *dest, const void *src, size_t n)

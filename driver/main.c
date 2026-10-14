@@ -83,6 +83,23 @@ bool show_debug_main = false;
 bool show_debug_tran = false;
 bool show_debug_pars = false;
 
+/* Largest frame (escapes included) the adapter firmware accepts from the
+ * host. A 137-byte frame locked up the firmware's transmit path until power
+ * cycle (2026-10-14); the limit itself is not published, 100 bytes is the
+ * size the original driver used. Larger frames are dropped with tx_dropped++.
+ */
+int max_wire_len = 100;
+module_param(max_wire_len, int, 0644);
+MODULE_PARM_DESC(max_wire_len, "drop frames longer than this on the wire, escapes included (default 100)");
+
+/* Runtime switches: /sys/module/usb2cansocketcan/parameters/<name> */
+module_param(show_debug_tran, bool, 0644);
+MODULE_PARM_DESC(show_debug_tran, "log every frame on the tty side (RX decode, TX bytes)");
+module_param(show_debug_pars, bool, 0644);
+MODULE_PARM_DESC(show_debug_pars, "log unsupported / malformed frames from the adapter");
+module_param(trace_func_main, bool, 0644);
+MODULE_PARM_DESC(trace_func_main, "trace ldisc and netdev entry points");
+
 int maxdev = 3;
 __initconst const char banner[] = "USB2CAN TRIPLE SocketCAN interface driver\n";
 struct net_device **triple_devs;
@@ -646,11 +663,15 @@ static netdev_tx_t triple_xmit(struct sk_buff *skb, struct net_device *dev)
     return NETDEV_TX_BUSY;
   }
 
+  if (triple_encaps(adapter, channel, skb) < 0) /* SocketCAN frame -> Triple HW (tty write) */
+  {
+    spin_unlock(&adapter->lock);
+    goto OUT;
+  }
+
   netif_stop_queue(adapter->devs[0]);
   netif_stop_queue(adapter->devs[1]);
   netif_stop_queue(adapter->devs[2]);
-
-  triple_encaps(adapter, channel, skb); /* SocketCAN frame -> Triple HW (tty write) */
 
   spin_unlock(&adapter->lock);
 

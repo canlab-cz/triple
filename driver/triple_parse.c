@@ -69,20 +69,12 @@ int TripleSendHex(TRIPLE_CAN_FRAME *frame)
   /* LAST BYTE (never escaped) */
   length += USB2CAN_TRIPLE_PushByteClear(U2C_TR_LAST_BYTE, p + length);
 
-  /* Total escaped length goes into byte 1. If that value is itself a
-   * special byte it has to be escaped too, which shifts the rest of the
-   * frame by one and makes the length one larger (0x10, 0x20 or 0xF0). */
-  if (length == U2C_TR_FIRST_BYTE || length == U2C_TR_LAST_BYTE || length == U2C_TR_SPEC_BYTE)
-  {
-    memmove(p + 3, p + 2, length - 2);
-    length++;
-    p[1] = U2C_TR_SPEC_BYTE;
-    p[2] = (unsigned char)length;
-  }
-  else
-  {
-    p[1] = (unsigned char)length;
-  }
+  /* Byte 1 is the total length of the frame as sent on the wire, escapes
+   * included, and it is written RAW. The firmware reads it as a plain byte
+   * count before any unescaping (verified on hardware 2026-10-14: an
+   * escaped length byte 1F 10 is read as "31 bytes" and swallows the next
+   * frame). So a 15-byte frame carries a literal 0x0F here. */
+  p[1] = (unsigned char)length;
   return length;
 }
 

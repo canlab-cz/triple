@@ -34,17 +34,14 @@ static void roundtrip(const char *name, int port, int fd, int rtr, int eff, unsi
   CHECK(len <= COM_BUF_LEN);
   CHECK(tx.comm_buf[0] == U2C_TR_FIRST_BYTE);
   CHECK(tx.comm_buf[len - 1] == U2C_TR_LAST_BYTE);
-  /* the length byte is the escaped total length and is itself escaped if needed */
-  if (tx.comm_buf[1] == U2C_TR_SPEC_BYTE)
-    CHECK(tx.comm_buf[2] == (unsigned char)len && tx.comm_buf[3] != U2C_TR_SPEC_BYTE);
-  else
-    CHECK(tx.comm_buf[1] == (unsigned char)len);
+  /* the length byte is the raw wire length, never escaped */
+  CHECK(tx.comm_buf[1] == (unsigned char)len);
   /* no unescaped terminator before the end */
   for (i = 2; i < len - 1; i++)
     if (tx.comm_buf[i] == U2C_TR_LAST_BYTE) CHECK(tx.comm_buf[i - 1] == U2C_TR_SPEC_BYTE);
 
   memset(&rx, 0, sizeof(rx));
-  ulen = escape_memcpy(rx.comm_buf, tx.comm_buf, len);
+  ulen = triple_unescape_frame(rx.comm_buf, tx.comm_buf, len);
   ret = TripleRecvHex(&rx, ulen);
   CHECK(ret == 0);
   CHECK(rx.CAN_port == port - 1);
@@ -74,13 +71,10 @@ static void roundtrip_plain(const char *name, int port, int fd, int rtr, int eff
 
   CHECK(tx.comm_buf[0] == U2C_TR_FIRST_BYTE);
   CHECK(tx.comm_buf[len - 1] == U2C_TR_LAST_BYTE);
-  if (tx.comm_buf[1] == U2C_TR_SPEC_BYTE)
-    CHECK(tx.comm_buf[2] == (unsigned char)len);
-  else
-    CHECK(tx.comm_buf[1] == (unsigned char)len);
+  CHECK(tx.comm_buf[1] == (unsigned char)len);
 
   memset(&rx, 0, sizeof(rx));
-  ulen = escape_memcpy(rx.comm_buf, tx.comm_buf, len);
+  ulen = triple_unescape_frame(rx.comm_buf, tx.comm_buf, len);
   ret = TripleRecvHex(&rx, ulen);
   CHECK(ret == 0);
   CHECK(rx.CAN_port == port - 1);
@@ -104,7 +98,8 @@ int main(void)
   roundtrip("canfd ext dlc12", 3, 1, 0, 1, 0x1FFFFFFF, 12);
   roundtrip("canfd std dlc48 (0F/EF/1F)", 3, 1, 0, 0, 0x0F, 48);
   /* escaped total length lands exactly on a special byte: 15 and 31 */
-  roundtrip_plain("can2.0 std dlc6 (len 15)", 1, 0, 0, 0, 0x123, 6);
+  roundtrip_plain("can2.0 std dlc6 (len 15 raw)", 1, 0, 0, 0, 0x123, 6);
+  roundtrip("canfd dlc20 + 2 esc (len 31 raw)", 3, 1, 0, 0, 0x100, 20);
   roundtrip_plain("can2.0 ext dlc8 + 1F id (len 31?)", 2, 0, 0, 1, 0x1F1F1F1F, 8);
   roundtrip_plain("canfd std dlc20 (len 31)", 3, 1, 0, 0, 0x100, 20);
 

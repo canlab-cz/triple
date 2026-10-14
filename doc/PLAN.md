@@ -44,18 +44,22 @@ Done 2026-10-14 (driver v1.4, daemon v1.1), not yet verified on hardware:
 - [x] Crash fixes: close guard restored (USB unplug), RX overflow (resync on next terminator, explicit escape state `SLF_ESC`), frames built with `alloc_can_skb` / `alloc_canfd_skb`, 3-port close logic, `NETDEV_TX_BUSY` while the shared TX buffer drains, FD frames rejected on ports 1 and 2.
 - [x] `TripleRecvHex` validates frame length and DLC and rejects unknown commands (timestamped frames are dropped instead of being delivered on port 0).
 - [x] Frame buffers enlarged from 100 to 160 bytes: a CAN FD frame whose 64 data bytes all need escaping is 144 bytes on the wire and overflowed `comm_buf` / `rbuff` / `xbuff` in v1.3.
-- [x] `TripleSendHex` escapes the length byte when the total length is 0x0F / 0x1F / 0xEF. v1.3 wrote it with `PushByte` at offset 1, which overwrote the command byte for exactly those lengths (a plain 6-byte standard frame is 15 bytes long).
+- [x] Length byte (byte 1) is written and read RAW. v1.3 wrote it with `PushByte` at offset 1, which overwrote the command byte when the length was 0x0F / 0x1F / 0xEF (a plain 6-byte standard frame is 15 bytes long), so such frames never left the adapter.
 - [x] Driver `Makefile` uses `$(M)/include` and `CURDIR`, so `make -C driver` works from any cwd.
 - [x] Daemon: tokenised argument parsing with error messages, default bitrates when `-s` is absent, `-v` prints the version, `N_TRIPLE` shared with the driver. Stale `utility/.depend64` removed, `.gitignore` added, `start.sh` double `sudo` fixed.
 - [x] Build matrix in containers (`ci/kbuild/run.sh`): Ubuntu 22.04 (5.15), Ubuntu 24.04 (6.8), Fedora 44 (7.2): all build without warnings. GitHub Actions workflow `.github/workflows/build.yml`.
 - [x] Host-side codec round-trip test (`tests/codec`): encode -> escape -> decode for CAN 2.0 and FD, RTR, all special bytes, special-valued length bytes, malformed input.
 - [x] README updated.
-- [ ] Hardware verification with two adapters back to back:
-  - RX identifier polarity: does the firmware set flag bit 0x80 for extended ids? (`driver/tx.c` keeps the v1.3 inverted interpretation.)
-  - Does the firmware escape the length byte on frames it sends (escaped length 15 or 31), and does it accept an escaped length byte on TX?
-  - TX under load on two ports at once; FD frames with 64 data bytes of 0x0F / 0x1F / 0xEF.
-  - USB unplug while attached, then re-plug and restart.
-  - `ip -details -s link` counters.
+- [x] Hardware verification with two adapters back to back (WSL2 6.6.87.2, both adapters attached through usbipd-win, 2026-10-14), see "Protocol facts verified on hardware" below.
+- [ ] Still open on hardware: TX under load on two ports at once; USB unplug while attached, then re-plug and restart.
+
+#### Protocol facts verified on hardware (firmware as shipped on SN 2604002 and its sibling)
+
+- Flag byte bit 0x80 means extended identifier in BOTH directions. v1.3 inverted it on receive, so every received frame had the wrong ID type.
+- Byte 1 is the raw wire length (escapes included) and is NOT escaped in either direction. The firmware reads it as a plain byte count: an escaped length `1F 10` is taken as "31 bytes" and swallows the following frame as well. A 15-byte frame carries a literal `0F` in byte 1 and is accepted.
+- Data bytes, identifier bytes and the flag byte ARE escaped with `1F` in both directions.
+- The firmware sends a status frame (`0x8A`, 42 bytes) every 250 ms on its own. The driver ignores it; Phase 2 should decode it for error counters and bus state.
+- CAN 2.0 on ports 1 and 2 (250 kbit/s and 500 kbit/s) and CAN FD on port 3 (dlc 8 and 12, with and without BRS) pass end to end in both directions.
 
 ### Phase 2: rewrite as a modern CAN device driver (template: in-tree `drivers/net/can/slcan`)
 

@@ -9,6 +9,7 @@
 
 extern bool trace_func_tran;
 extern bool show_debug_tran;
+extern int max_wire_len;
 extern void print_func_trace(bool is_trace, int line, const char *func);
 
 static void triple_bump(USB2CAN_TRIPLE *adapter);
@@ -48,6 +49,13 @@ void triple_unesc(USB2CAN_TRIPLE *adapter, unsigned char s)
   if (adapter->rcount == 0 && s != U2C_TR_FIRST_BYTE)
     return;
 
+  /* Byte 1 is the raw length byte: never an escape marker or terminator. */
+  if (adapter->rcount == 1)
+  {
+    adapter->rbuff[adapter->rcount++] = s;
+    return;
+  }
+
   escaped = test_and_clear_bit(SLF_ESC, &adapter->flags);
   adapter->rbuff[adapter->rcount++] = s;
 
@@ -81,7 +89,12 @@ static void triple_bump(USB2CAN_TRIPLE *adapter)
   int i;
 
   memset(&frame, 0, sizeof(frame));
-  len = escape_memcpy(frame.comm_buf, adapter->rbuff, adapter->rcount);
+
+  if (show_debug_tran)
+    print_hex_dump(KERN_DEBUG, "triple raw rx: ", DUMP_PREFIX_NONE, 32, 1,
+                   adapter->rbuff, adapter->rcount, false);
+
+  len = triple_unescape_frame(frame.comm_buf, adapter->rbuff, adapter->rcount);
 
   ret = TripleRecvHex(&frame, len);
   if (ret < 0)
@@ -111,13 +124,9 @@ static void triple_bump(USB2CAN_TRIPLE *adapter)
   for (i = 0; i < ID_LEN; i++)
     id |= (canid_t)frame.id[i] << (8 * (ID_LEN - 1 - i));
 
-  /*
-   * NOTE: since v1.3 the receive path treats a *clear* 0x80 flag bit as an
-   * extended identifier (the transmit path sets 0x80 for extended ids).
-   * This matches the behaviour of the released driver and is kept as is
-   * until it is verified against the firmware. See doc/PLAN.md.
-   */
-  if (!frame.id_type)
+  /* Flag bit 0x80 marks an extended identifier in both directions
+   * (verified against firmware on 2026-10-14; v1.3 had this inverted). */
+  if (frame.id_type)
     id = (id & CAN_EFF_MASK) | CAN_EFF_FLAG;
   else
     id &= CAN_SFF_MASK;
@@ -244,6 +253,15 @@ int triple_encaps(USB2CAN_TRIPLE *adapter, int channel, struct sk_buff *skb)
   memcpy(tf.data, data, dlc);
 
   len = TripleSendHex(&tf);
+
+  if (len > max_wire_len)
+  {
+    /* The firmware cannot take this; sending it wedges the adapter. */
+    adapter->devs[channel]->stats.tx_dropped++;
+    if (net_ratelimit())
+      netdev_warn(adapter->devs[channel], "frame too long for adapter (%d > %d bytes on the wire), dropped\n", len, max_wire_len);
+    return -EMSGSIZE;
+  }
 
   if (show_debug_tran)
   {
