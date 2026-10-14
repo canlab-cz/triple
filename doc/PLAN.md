@@ -98,8 +98,13 @@ Same numbers with `hwtstamp=0`, so the message length is not the limit. The send
 
 ### Phase 3: protocol documentation and shared codec
 
-- `doc/protocol.md` written from the code (all commands, settings payloads, FD DLC mapping, escaping).
-- Single header-only codec shared by driver, daemon and GUI, with host-side unit tests.
+Done 2026-10-14:
+
+- [x] `doc/protocol.md`: transport, framing and escaping (raw length byte), size limits, CAN frame payload with flags, DLC and timestamp, every command in both directions with payload layouts, the speed code table and formula, the raw bit timing layout (from v1.x, unverified), the decoded parts of the status message, behaviour notes and the captured byte sequences. Everything is labelled verified / probable / unverified.
+- [x] Shared codec `driver/triple_proto.[ch]`: C, no kernel dependencies, compiled into the module and by `tests/codec` on the host. Added `triple_encode_bittiming_fd()` for the raw MCP2517FD timing command so the open Phase 2 item only needs the netlink glue.
+- [x] Python reference implementation `tools/triple_proto.py` (codec, stream parser, bitrate tables) with `tools/test_triple_proto.py`; the C and Python tests share the captured vectors and the bit timing vector, so the two implementations are kept in step.
+- [x] `tools/triple_dump.py`: candump-like tool that drives an adapter directly over the serial port with pyserial, on Linux, Windows or macOS, without the kernel module. This is the seed of the GUI's direct-serial backend (Phase 4).
+- [ ] Remaining unknowns in the protocol need the firmware source: status bytes 7, 8, 13, 14, 21, 27 and the bus-off encoding, the marker message, the real host-side buffer size, and what buffer mode selects.
 
 ### Phase 4: analyzer GUI (PP2CAN-like)
 

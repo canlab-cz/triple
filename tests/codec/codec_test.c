@@ -149,6 +149,21 @@ static void captured(void)
   n = triple_encode_fw_version_req(cmd);
   CHECK(n == 4 && memcmp(cmd, "\x0f\x04\x90\xef", 4) == 0);
 
+  {
+    /* raw bit timing: 40 MHz, 500k nominal (brp 1, tseg1 62, tseg2 17, sjw 17),
+     * 2M data (brp 1, tseg1 15, tseg2 4, sjw 4), tdc auto. DTSEG1 low byte is
+     * 0x0F and gets escaped; the 31-byte message keeps a raw 0x1F length. */
+    struct triple_fd_bittiming bt = { 1, 62, 17, 17, 1, 15, 4, 4, 0, 0, 2 };
+    u8 wire[64];
+    const u8 expect[] = { 0x0F, 0x1F, 0x89, 0x03, 0x00, 0x01, 0x00, 0x3E, 0x00, 0x11, 0x00, 0x11,
+                          0x00, 0x01, 0x00, 0x1F, 0x0F, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+                          0x00, 0x02, 0x00, 0x01, 0x00, 0xEF };
+    n = triple_encode_bittiming_fd(wire, &bt, false, true, false);
+    CHECK(n == (int)sizeof(expect));
+    CHECK(n == (int)sizeof(expect) && memcmp(wire, expect, n) == 0);
+    CHECK(wire[1] == 0x1F);
+  }
+
   printf("--- bitrate tables\n");
   CHECK(triple_can_speed_kbit(250000) == 250 && triple_can_speed_kbit(33333) == 33 && triple_can_speed_kbit(300000) == 0);
   CHECK(triple_fd_speed_code(125000, 6700000) == 1256700);

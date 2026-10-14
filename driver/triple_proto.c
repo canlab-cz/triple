@@ -244,6 +244,25 @@ int triple_encode_settings_fd(u8 *out, u32 code, bool listen_only, bool iso, boo
   return triple_build(out, TRIPLE_CMD_SETTINGS, payload, sizeof(payload));
 }
 
+int triple_encode_bittiming_fd(u8 *out, const struct triple_fd_bittiming *bt, bool listen_only, bool iso, bool esi)
+{
+  const u16 v[11] = { bt->nbrp, bt->ntseg1, bt->ntseg2, bt->nsjw, bt->dbrp, bt->dtseg1, bt->dtseg2, bt->dsjw,
+                      bt->tdco, bt->tdcv, bt->tdcmod };
+  u8 payload[1 + 22 + 3];
+  int i;
+
+  payload[0] = 3;
+  for (i = 0; i < 11; i++)
+  {
+    payload[1 + 2 * i] = (u8)(v[i] >> 8);
+    payload[2 + 2 * i] = (u8)v[i];
+  }
+  payload[23] = listen_only ? 1 : 0;
+  payload[24] = iso ? 1 : 0;
+  payload[25] = esi ? 1 : 0;
+  return triple_build(out, TRIPLE_CMD_BITTIMING, payload, sizeof(payload));
+}
+
 int triple_encode_timestamp_mode(u8 *out, bool on)
 {
   u8 payload[1] = { on ? 1 : 0 };

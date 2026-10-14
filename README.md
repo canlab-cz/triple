@@ -104,10 +104,19 @@ adapter is plugged in (`etc/systemd/system/usb2can-triple@.service`).
 `debug=1` (module parameter or `/sys/module/usb2cansocketcan/parameters/debug`)
 hex dumps every message exchanged with the adapter.
 
+## Without the kernel module
+
+`tools/triple_dump.py` talks to an adapter directly over its serial port
+with pyserial and prints received frames; it runs on Windows and macOS as
+well (`python3 tools/triple_dump.py COM7 --send 1 123#11223344`). It cannot
+share a port with the kernel driver. The wire protocol is documented in
+`doc/protocol.md`; `tools/triple_proto.py` is the Python codec it uses.
+
 ## Development
 
 * `make -C tests/codec test` runs the host-side codec test, including byte
-  sequences captured from the firmware.
+  sequences captured from the firmware; `python3 tools/test_triple_proto.py`
+  runs the same vectors against the Python codec.
 * `sh ci/kbuild/run.sh` compiles the module against several kernel header
   sets in Docker.
 * `doc/PLAN.md` is the roadmap: next is a CAN bus analyzer GUI.

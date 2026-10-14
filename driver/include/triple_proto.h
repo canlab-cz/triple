@@ -164,6 +164,15 @@ int triple_encode_settings_can(u8 *out, u8 port, u16 kbit, bool listen_only);
 /* Port 3 (CAN FD): combined speed code (see triple_fd_speed_code). */
 int triple_encode_settings_fd(u8 *out, u32 code, bool listen_only, bool iso, bool esi);
 
+/* Port 3 raw MCP2517FD bit timing (TRIPLE_CMD_BITTIMING). Layout taken
+ * from the v1.x daemon, not yet exercised against firmware. */
+struct triple_fd_bittiming {
+  u16 nbrp, ntseg1, ntseg2, nsjw;     /* nominal */
+  u16 dbrp, dtseg1, dtseg2, dsjw;     /* data */
+  u16 tdco, tdcv, tdcmod;             /* transmitter delay compensation, tdcmod 0 off 1 manual 2 auto */
+};
+int triple_encode_bittiming_fd(u8 *out, const struct triple_fd_bittiming *bt, bool listen_only, bool iso, bool esi);
+
 int triple_encode_timestamp_mode(u8 *out, bool on);
 int triple_encode_buffer_mode(u8 *out, u32 mode);
 int triple_encode_fw_version_req(u8 *out);
