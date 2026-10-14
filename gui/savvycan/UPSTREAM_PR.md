@@ -2,7 +2,7 @@
 
 Status: prepared locally, **not opened**. Branch `usb2can-triple` in the
 WSL checkout `/home/pavel/SavvyCAN`, on top of upstream master `e439670`,
-has seven commits:
+has eight commits:
 
 | Commit | Content |
 |---|---|
@@ -13,6 +13,7 @@ has seven commits:
 | `8daedb1` | Add PDO decoding to the CANopen window (EDS / DCF or mapping read over SDO) |
 | `f67667d` | Add Print Log to the File menu |
 | `3a41e68` | Triple: zero padding for CAN FD lengths between DLC steps |
+| `a5f04bf` | Triple: CAN3 bitrate pairs outside the firmware table as raw timing |
 
 They can go in one PR or as separate ones; only the first commit is
 specific to the Triple, the tool windows and the PP2CAN log format work

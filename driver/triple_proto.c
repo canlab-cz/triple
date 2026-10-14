@@ -328,8 +328,9 @@ int triple_fd_bittiming_from_tq(struct triple_fd_bittiming *bt,
   return 0;
 }
 
-u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw)
+u32 triple_fd_timing(u32 bitrate, bool data, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw)
 {
+  const u32 max_t1 = data ? 32 : 256, max_t2 = data ? 16 : 128;
   u32 b, tq, t2;
 
   if (!bitrate)
@@ -337,16 +338,16 @@ u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sj
   for (b = 1; b <= 256; b++)
   {
     tq = (TRIPLE_FD_CLOCK_HZ / b + bitrate / 2) / bitrate;   /* time quanta per bit, rounded */
-    if (tq > 49)                                /* 1 + 32 + 16 */
+    if (tq > 1 + max_t1 + max_t2)
       continue;
     if (tq < 4)
       return 0;
-    t2 = (tq * 20 + 50) / 100;
+    t2 = (tq * 20 + 50) / 100;                  /* 80 % sample point */
     if (t2 < 1)
       t2 = 1;
-    if (t2 > 16)
-      t2 = 16;
-    if (tq - 1 - t2 > 32)
+    if (t2 > max_t2)
+      t2 = max_t2;
+    if (tq - 1 - t2 > max_t1)
       continue;
     *brp = b;
     *tseg1 = tq - 1 - t2;
@@ -355,6 +356,28 @@ u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sj
     return TRIPLE_FD_CLOCK_HZ / (b * tq);
   }
   return 0;
+}
+
+u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw)
+{
+  return triple_fd_timing(bitrate, true, brp, tseg1, tseg2, sjw);
+}
+
+static bool triple_within_1pct(u32 reached, u32 wanted)
+{
+  u32 d = reached > wanted ? reached - wanted : wanted - reached;
+
+  return reached && (u64)d * 100 <= wanted;
+}
+
+int triple_fd_raw_for_rates(struct triple_fd_bittiming *bt, u32 nominal, u32 data)
+{
+  u32 nb, n1, n2, ns, db, d1, d2, ds;
+
+  if (!triple_within_1pct(triple_fd_timing(nominal, false, &nb, &n1, &n2, &ns), nominal) ||
+      !triple_within_1pct(triple_fd_timing(data, true, &db, &d1, &d2, &ds), data))
+    return -1;
+  return triple_fd_bittiming_from_tq(bt, nb, n1, n2, ns, db, d1, d2, ds);
 }
 
 int triple_encode_timestamp_mode(u8 *out, bool on)

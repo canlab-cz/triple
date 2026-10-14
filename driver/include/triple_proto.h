@@ -201,6 +201,14 @@ int triple_fd_bittiming_from_tq(struct triple_fd_bittiming *bt,
  * runs CAN FD). Returns the bitrate reached, or 0 if none is possible. */
 u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw);
 
+/* Same for either phase (data selects the data phase limits). */
+u32 triple_fd_timing(u32 bitrate, bool data, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw);
+
+/* Raw timing for a nominal/data pair at 80 % sample points (the firmware
+ * table's), for rates the speed codes of 4.1 do not cover. Returns 0, or
+ * -1 if a rate cannot be reached within 1 %. */
+int triple_fd_raw_for_rates(struct triple_fd_bittiming *bt, u32 nominal, u32 data);
+
 int triple_encode_timestamp_mode(u8 *out, bool on);
 int triple_encode_buffer_mode(u8 *out, u32 mode);
 int triple_encode_fw_version_req(u8 *out);

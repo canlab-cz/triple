@@ -228,10 +228,10 @@ index 387a4fb..1053355 100644
  };
 diff --git a/connections/triple_proto.c b/connections/triple_proto.c
 new file mode 100755
-index 0000000..a46fa23
+index 0000000..3330b33
 --- /dev/null
 +++ b/connections/triple_proto.c
-@@ -0,0 +1,436 @@
+@@ -0,0 +1,459 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +/*
@@ -562,8 +562,9 @@ index 0000000..a46fa23
 +  return 0;
 +}
 +
-+u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw)
++u32 triple_fd_timing(u32 bitrate, bool data, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw)
 +{
++  const u32 max_t1 = data ? 32 : 256, max_t2 = data ? 16 : 128;
 +  u32 b, tq, t2;
 +
 +  if (!bitrate)
@@ -571,16 +572,16 @@ index 0000000..a46fa23
 +  for (b = 1; b <= 256; b++)
 +  {
 +    tq = (TRIPLE_FD_CLOCK_HZ / b + bitrate / 2) / bitrate;   /* time quanta per bit, rounded */
-+    if (tq > 49)                                /* 1 + 32 + 16 */
++    if (tq > 1 + max_t1 + max_t2)
 +      continue;
 +    if (tq < 4)
 +      return 0;
-+    t2 = (tq * 20 + 50) / 100;
++    t2 = (tq * 20 + 50) / 100;                  /* 80 % sample point */
 +    if (t2 < 1)
 +      t2 = 1;
-+    if (t2 > 16)
-+      t2 = 16;
-+    if (tq - 1 - t2 > 32)
++    if (t2 > max_t2)
++      t2 = max_t2;
++    if (tq - 1 - t2 > max_t1)
 +      continue;
 +    *brp = b;
 +    *tseg1 = tq - 1 - t2;
@@ -589,6 +590,28 @@ index 0000000..a46fa23
 +    return TRIPLE_FD_CLOCK_HZ / (b * tq);
 +  }
 +  return 0;
++}
++
++u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw)
++{
++  return triple_fd_timing(bitrate, true, brp, tseg1, tseg2, sjw);
++}
++
++static bool triple_within_1pct(u32 reached, u32 wanted)
++{
++  u32 d = reached > wanted ? reached - wanted : wanted - reached;
++
++  return reached && (u64)d * 100 <= wanted;
++}
++
++int triple_fd_raw_for_rates(struct triple_fd_bittiming *bt, u32 nominal, u32 data)
++{
++  u32 nb, n1, n2, ns, db, d1, d2, ds;
++
++  if (!triple_within_1pct(triple_fd_timing(nominal, false, &nb, &n1, &n2, &ns), nominal) ||
++      !triple_within_1pct(triple_fd_timing(data, true, &db, &d1, &d2, &ds), data))
++    return -1;
++  return triple_fd_bittiming_from_tq(bt, nb, n1, n2, ns, db, d1, d2, ds);
 +}
 +
 +int triple_encode_timestamp_mode(u8 *out, bool on)
@@ -670,10 +693,10 @@ index 0000000..a46fa23
 +}
 diff --git a/connections/triple_proto.h b/connections/triple_proto.h
 new file mode 100755
-index 0000000..7291fab
+index 0000000..217ac7c
 --- /dev/null
 +++ b/connections/triple_proto.h
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,253 @@
 +/* SPDX-License-Identifier: MIT */
 +/* Copyright (c) 2026 CANLAB s.r.o. */
 +/*
@@ -877,6 +900,14 @@ index 0000000..7291fab
 + * runs CAN FD). Returns the bitrate reached, or 0 if none is possible. */
 +u32 triple_fd_data_timing(u32 bitrate, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw);
 +
++/* Same for either phase (data selects the data phase limits). */
++u32 triple_fd_timing(u32 bitrate, bool data, u32 *brp, u32 *tseg1, u32 *tseg2, u32 *sjw);
++
++/* Raw timing for a nominal/data pair at 80 % sample points (the firmware
++ * table's), for rates the speed codes of 4.1 do not cover. Returns 0, or
++ * -1 if a rate cannot be reached within 1 %. */
++int triple_fd_raw_for_rates(struct triple_fd_bittiming *bt, u32 nominal, u32 data);
++
 +int triple_encode_timestamp_mode(u8 *out, bool on);
 +int triple_encode_buffer_mode(u8 *out, u32 mode);
 +int triple_encode_fw_version_req(u8 *out);
@@ -921,10 +952,10 @@ index 0000000..7291fab
 +#endif /* TRIPLE_PROTO_H */
 diff --git a/connections/triple_serial.cpp b/connections/triple_serial.cpp
 new file mode 100755
-index 0000000..cc4a38c
+index 0000000..8e47b75
 --- /dev/null
 +++ b/connections/triple_serial.cpp
-@@ -0,0 +1,571 @@
+@@ -0,0 +1,592 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#include <QDebug>
@@ -938,8 +969,9 @@ index 0000000..cc4a38c
 +#include "utility.h"
 +
 +/* SavvyCAN's data rate combo offers 1M, 2M, 4M, 5M; the adapter also does
-+ * 250k .. 10M. Anything not in the firmware table is mapped to the next
-+ * supported value above it. */
++ * 250k .. 10M. Pairs outside the firmware table go out as raw controller
++ * timing (sendBusSettings); only when that cannot reach the rate within 1 %
++ * is the data rate mapped to the next table value above it. */
 +static uint32_t nearestSupportedDataRate(uint32_t nominal, uint32_t wanted)
 +{
 +    static const uint32_t rates[] = { 250000, 500000, 833333, 1000000, 1500000, 2000000, 3000000,
@@ -1176,16 +1208,36 @@ index 0000000..cc4a38c
 +    else
 +    {
 +        uint32_t nominal = bus.getSpeed();
-+        uint32_t data = bus.isCanFD() ? nearestSupportedDataRate(nominal, bus.getDataRate()) : triple_fd_default_data_bitrate(nominal);
-+        uint32_t code = triple_fd_speed_code(nominal, data);
-+        if (!code)
++        uint32_t wanted = bus.isCanFD() ? bus.getDataRate() : 0;
++        if (!wanted)
++            wanted = triple_fd_default_data_bitrate(nominal) ? triple_fd_default_data_bitrate(nominal) : 2000000;
++        uint32_t code = triple_fd_speed_code(nominal, wanted);
++        struct triple_fd_bittiming bt;
++        if (code)                               /* in the firmware's table */
 +        {
-+            sendDebug("Triple: unsupported CAN3 bitrate pair " + QString::number(nominal) + " / " + QString::number(data) +
-+                      " (nominal 125k 250k 500k 1M, data above nominal)");
-+            return;
++            n = triple_encode_settings_fd(cmd, code, listen, true, false);
++            sendDebug("Triple: CAN3 FD " + QString::number(nominal) + " / " + QString::number(wanted) + " bit/s" + (listen ? " listen only" : ""));
 +        }
-+        n = triple_encode_settings_fd(cmd, code, listen, true, false);
-+        sendDebug("Triple: CAN3 FD " + QString::number(nominal) + " / " + QString::number(data) + " bit/s" + (listen ? " listen only" : ""));
++        else if (wanted > nominal && triple_fd_raw_for_rates(&bt, nominal, wanted) == 0)
++        {
++            /* any other pair: raw controller timing at the table's 80 % sample points */
++            n = triple_encode_bittiming_fd(cmd, &bt, listen, true, false);
++            sendDebug("Triple: CAN3 FD " + QString::number(nominal) + " / " + QString::number(wanted) +
++                      " bit/s, raw timing at 80 % sample points" + (listen ? " listen only" : ""));
++        }
++        else
++        {
++            uint32_t data = nearestSupportedDataRate(nominal, wanted);
++            code = triple_fd_speed_code(nominal, data);
++            if (!code)
++            {
++                sendDebug("Triple: unsupported CAN3 bitrate pair " + QString::number(nominal) + " / " + QString::number(wanted));
++                return;
++            }
++            n = triple_encode_settings_fd(cmd, code, listen, true, false);
++            sendDebug("Triple: CAN3 FD " + QString::number(nominal) + " / " + QString::number(data) + " bit/s (data rate rounded up)" +
++                      (listen ? " listen only" : ""));
++        }
 +    }
 +    sendToSerial(QByteArray((const char *)cmd, n));
 +    setConfigured(busIdx, true);

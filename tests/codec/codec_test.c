@@ -285,6 +285,18 @@ int main(void)
     CHECK(triple_fd_data_timing(250000, &brp, &t1, &t2, &sjw) == 250000);
     CHECK(triple_fd_data_timing(20000000, &brp, &t1, &t2, &sjw) == 0);
     CHECK(triple_fd_data_timing(0, &brp, &t1, &t2, &sjw) == 0);
+
+    /* nominal phase limits */
+    CHECK(triple_fd_timing(800000, false, &brp, &t1, &t2, &sjw) == 800000 && brp == 1 && t1 == 39 && t2 == 10);
+    CHECK(triple_fd_timing(100000, false, &brp, &t1, &t2, &sjw) == 100000 && brp == 2 && t1 + t2 + 1 == 200);
+
+    /* pairs outside the speed table, 80 % sample points; 800k/4M was run on the bus */
+    CHECK(triple_fd_raw_for_rates(&bt, 800000, 4000000) == 0);
+    CHECK(bt.nbrp == 0 && bt.ntseg1 == 38 && bt.ntseg2 == 9 && bt.dbrp == 0 && bt.dtseg1 == 6 && bt.dtseg2 == 1);
+    CHECK(bt.tdco == 8 && bt.tdcmod == 2);
+    CHECK(triple_fd_raw_for_rates(&bt, 125000, 6700000) == 0);   /* 6.667M, 0.5 % off */
+    CHECK(triple_fd_raw_for_rates(&bt, 500000, 1500000) < 0);    /* 1.48M, 1.3 % off */
+    CHECK(triple_fd_raw_for_rates(&bt, 500000, 20000000) < 0);
   }
 
   printf("%s (%d failures)\n", fails ? "CODEC TEST FAILED" : "CODEC TEST PASSED", fails);

@@ -11,8 +11,9 @@
 #include "utility.h"
 
 /* SavvyCAN's data rate combo offers 1M, 2M, 4M, 5M; the adapter also does
- * 250k .. 10M. Anything not in the firmware table is mapped to the next
- * supported value above it. */
+ * 250k .. 10M. Pairs outside the firmware table go out as raw controller
+ * timing (sendBusSettings); only when that cannot reach the rate within 1 %
+ * is the data rate mapped to the next table value above it. */
 static uint32_t nearestSupportedDataRate(uint32_t nominal, uint32_t wanted)
 {
     static const uint32_t rates[] = { 250000, 500000, 833333, 1000000, 1500000, 2000000, 3000000,
@@ -249,16 +250,36 @@ void TripleSerial::sendBusSettings(int busIdx)
     else
     {
         uint32_t nominal = bus.getSpeed();
-        uint32_t data = bus.isCanFD() ? nearestSupportedDataRate(nominal, bus.getDataRate()) : triple_fd_default_data_bitrate(nominal);
-        uint32_t code = triple_fd_speed_code(nominal, data);
-        if (!code)
+        uint32_t wanted = bus.isCanFD() ? bus.getDataRate() : 0;
+        if (!wanted)
+            wanted = triple_fd_default_data_bitrate(nominal) ? triple_fd_default_data_bitrate(nominal) : 2000000;
+        uint32_t code = triple_fd_speed_code(nominal, wanted);
+        struct triple_fd_bittiming bt;
+        if (code)                               /* in the firmware's table */
         {
-            sendDebug("Triple: unsupported CAN3 bitrate pair " + QString::number(nominal) + " / " + QString::number(data) +
-                      " (nominal 125k 250k 500k 1M, data above nominal)");
-            return;
+            n = triple_encode_settings_fd(cmd, code, listen, true, false);
+            sendDebug("Triple: CAN3 FD " + QString::number(nominal) + " / " + QString::number(wanted) + " bit/s" + (listen ? " listen only" : ""));
         }
-        n = triple_encode_settings_fd(cmd, code, listen, true, false);
-        sendDebug("Triple: CAN3 FD " + QString::number(nominal) + " / " + QString::number(data) + " bit/s" + (listen ? " listen only" : ""));
+        else if (wanted > nominal && triple_fd_raw_for_rates(&bt, nominal, wanted) == 0)
+        {
+            /* any other pair: raw controller timing at the table's 80 % sample points */
+            n = triple_encode_bittiming_fd(cmd, &bt, listen, true, false);
+            sendDebug("Triple: CAN3 FD " + QString::number(nominal) + " / " + QString::number(wanted) +
+                      " bit/s, raw timing at 80 % sample points" + (listen ? " listen only" : ""));
+        }
+        else
+        {
+            uint32_t data = nearestSupportedDataRate(nominal, wanted);
+            code = triple_fd_speed_code(nominal, data);
+            if (!code)
+            {
+                sendDebug("Triple: unsupported CAN3 bitrate pair " + QString::number(nominal) + " / " + QString::number(wanted));
+                return;
+            }
+            n = triple_encode_settings_fd(cmd, code, listen, true, false);
+            sendDebug("Triple: CAN3 FD " + QString::number(nominal) + " / " + QString::number(data) + " bit/s (data rate rounded up)" +
+                      (listen ? " listen only" : ""));
+        }
     }
     sendToSerial(QByteArray((const char *)cmd, n));
     setConfigured(busIdx, true);
