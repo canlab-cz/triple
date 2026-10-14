@@ -32,6 +32,22 @@ What the connection provides:
 
 ![CANopen window](../../doc/img/savvycan-canopen.png)
 
+* PP2CAN tools:
+  * **PP2CAN log files**: File > Load Log File (autodetected) and the
+    Playback window read PP2CAN `.log` captures, so Playback works as
+    PP2CAN's file sender; File > Save Log as PP2CAN writes the current
+    capture in PP2CAN format. Note that PP2CAN writes time fields without
+    zero padding ("45.4" is 45 s and 4 ms).
+  * **Data Panel** (Send Frames): sliders, hex values and bit check boxes
+    per byte, a 16-bit value in Intel or Motorola order, fill from ASCII;
+    sends on change and/or periodically.
+  * **Response Meter** (RE Tools): delay between a request and a response
+    ID, from hardware timestamps (watch mode) or with periodic requests.
+  * **CAN Calculator** (RE Tools): identifier as 29-bit, 11+18 and
+    MCP2510/2515 or SJA1000 register values, editable in every field.
+
+![Playback replaying a PP2CAN log](../../doc/img/savvycan-file-sender.png)
+
 To try it without a CANopen device, run the simulated node from
 `tools/canopen_sim.py` on a Linux SocketCAN interface on the same bus:
 `python3 tools/canopen_sim.py can0 --node 5`.

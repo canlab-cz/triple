@@ -1,5 +1,5 @@
 diff --git a/SavvyCAN.pro b/SavvyCAN.pro
-index d7197dc..874c7f1 100644
+index d7197dc..51c67b4 100644
 --- a/SavvyCAN.pro
 +++ b/SavvyCAN.pro
 @@ -28,6 +28,8 @@ SOURCES += main.cpp\
@@ -11,16 +11,27 @@ index d7197dc..874c7f1 100644
      connections/mqtt_bus.cpp \
      dbc/dbcnodeduplicateeditor.cpp \
      framesenderobject.cpp \
-@@ -103,6 +105,8 @@ SOURCES += main.cpp\
+@@ -55,6 +57,7 @@ SOURCES += main.cpp\
+     candatagrid.cpp \
+     framesenderwindow.cpp \
+     framefileio.cpp \
++    pp2canlog.cpp \
+     mainsettingsdialog.cpp \
+     scriptingwindow.cpp \
+     scriptcontainer.cpp \
+@@ -103,6 +106,11 @@ SOURCES += main.cpp\
      re/sniffer/SnifferDelegate.cpp \
      connections/newconnectiondialog.cpp \
      re/temporalgraphwindow.cpp \
 +    re/busstatswindow.cpp \
 +    re/canopenwindow.cpp \
++    re/cancalcwindow.cpp \
++    re/responsemeterwindow.cpp \
++    re/datapanelwindow.cpp \
      re/udsfirmwareuploaderwindow.cpp \
      filterutility.cpp \
      pcaplite.cpp
-@@ -114,6 +118,8 @@ HEADERS  += mainwindow.h \
+@@ -114,6 +122,8 @@ HEADERS  += mainwindow.h \
      connections/canlogserver.h \
      connections/canserver.h \
      connections/lawicel_serial.h \
@@ -29,12 +40,26 @@ index d7197dc..874c7f1 100644
      connections/socketcand.h \
      connections/mqtt_bus.h \
      dbc/dbcnodeduplicateeditor.h \
-@@ -198,6 +204,8 @@ HEADERS  += mainwindow.h \
+@@ -149,6 +159,8 @@ HEADERS  += mainwindow.h \
+     framesenderwindow.h \
+     can_trigger_structs.h \
+     framefileio.h \
++    pp2canlog.h \
++    pp2canlogfmt.h \
+     config.h \
+     mainsettingsdialog.h \
+     scriptingwindow.h \
+@@ -198,6 +210,13 @@ HEADERS  += mainwindow.h \
      re/sniffer/SnifferDelegate.h \
      connections/newconnectiondialog.h \
      re/temporalgraphwindow.h \
 +    re/busstatswindow.h \
 +    re/canopenwindow.h \
++    re/savvycompat.h \
++    re/canidcalc.h \
++    re/cancalcwindow.h \
++    re/responsemeterwindow.h \
++    re/datapanelwindow.h \
      re/udsfirmwareuploaderwindow.h \
      filterutility.h \
      pcaplite.h
@@ -1470,24 +1495,88 @@ index 0000000..a38dc90
 +};
 +
 +#endif // TRIPLE_SERIAL_H
+diff --git a/framefileio.cpp b/framefileio.cpp
+index e6aaf53..fb9aef5 100644
+--- a/framefileio.cpp
++++ b/framefileio.cpp
+@@ -1,4 +1,5 @@
+ #include "framefileio.h"
++#include "pp2canlog.h"
+ 
+ #include <QMessageBox>
+ #include <QProgressDialog>
+@@ -192,6 +193,7 @@ bool FrameFileIO::loadFrameFile(QString &fileName, QVector<CANFrame>* frameCache
+     filters.append(QString(tr("CANServer Binary Log (*.log *.LOG)")));
+     filters.append(QString(tr("Wireshark (*.pcap *.PCAP *.pcapng *.PCAPNG)")));
+     filters.append(QString(tr("Wireshark SocketCAN (*.pcap *.PCAP")));
++    filters.append(QString(tr("PP2CAN Log (*.log *.LOG)")));
+ 
+     dialog.setDirectory(settings.value("FileIO/LoadSaveDirectory", dialog.directory().path()).toString());
+     dialog.setFileMode(QFileDialog::ExistingFile);
+@@ -239,6 +241,7 @@ bool FrameFileIO::loadFrameFile(QString &fileName, QVector<CANFrame>* frameCache
+         if (selectedNameFilter == filters[23]) result = loadCANServerFile(filename, frameCache);
+         if (selectedNameFilter == filters[24]) result = loadWiresharkFile(filename, frameCache);
+         if (selectedNameFilter == filters[25]) result = loadWiresharkSocketCANFile(filename, frameCache);
++        if (selectedNameFilter == tr("PP2CAN Log (*.log *.LOG)")) result = PP2CANLog::load(filename, frameCache);
+ 
+ 
+         progress.cancel();
+@@ -270,6 +273,9 @@ bool FrameFileIO::loadFrameFile(QString &fileName, QVector<CANFrame>* frameCache
+ //whether a file could be loaded or not by a given loader. The loader return is still used in case the guess was wrong.
+ bool FrameFileIO::autoDetectLoadFile(QString filename, QVector<CANFrame>* frames)
+ {
++    if (PP2CANLog::isFile(filename) && PP2CANLog::load(filename, frames))
++        return true;
++
+     qDebug() << "Attempting Canalyzer BLF";
+     if (isCanalyzerBLF(filename))
+     {
 diff --git a/mainwindow.cpp b/mainwindow.cpp
-index 56ba04c..ccd4d42 100644
+index 56ba04c..be75ab2 100644
 --- a/mainwindow.cpp
 +++ b/mainwindow.cpp
-@@ -6,6 +6,9 @@
+@@ -6,6 +6,13 @@
  #include <QtSerialPort/QSerialPortInfo>
  #include "connections/canconmanager.h"
  #include "connections/connectionwindow.h"
 +#include "re/busstatswindow.h"
 +#include <QPointer>
 +#include "re/canopenwindow.h"
++#include "re/cancalcwindow.h"
++#include "re/responsemeterwindow.h"
++#include "re/datapanelwindow.h"
++#include "pp2canlog.h"
  #include "helpwindow.h"
  #include "utility.h"
  #include "filterutility.h"
-@@ -225,6 +228,21 @@ MainWindow::MainWindow(QWidget *parent) :
+@@ -225,6 +232,45 @@ MainWindow::MainWindow(QWidget *parent) :
      //connect(CANConManager::getInstance(), CANConManager::connectionStatusUpdated, this, MainWindow::connectionStatusUpdated);
      connect(CANConManager::getInstance(), SIGNAL(connectionStatusUpdated(int)), this, SLOT(connectionStatusUpdated(int)));
  
++    connect(ui->menuFile->addAction(tr("Save Log as PP2CAN...")), &QAction::triggered, this, [this]() {
++        PP2CANLog::saveWithDialog(this, model->getListReference());
++    });
++    connect(ui->menuSend_Frames->addAction(tr("Data Panel")), &QAction::triggered, this, [this]() {
++        static QPointer<DataPanelWindow> w;
++        if (!w) w = new DataPanelWindow(this);
++        w->show();
++        w->raise();
++        w->activateWindow();
++    });
++    connect(ui->menu_RE_Tools->addAction(tr("Response Meter")), &QAction::triggered, this, [this]() {
++        static QPointer<ResponseMeterWindow> w;
++        if (!w) w = new ResponseMeterWindow(this);
++        w->show();
++        w->raise();
++        w->activateWindow();
++    });
++    connect(ui->menu_RE_Tools->addAction(tr("CAN Calculator")), &QAction::triggered, this, [this]() {
++        static QPointer<CanCalcWindow> w;
++        if (!w) w = new CanCalcWindow(this);
++        w->show();
++        w->raise();
++        w->activateWindow();
++    });
 +    connect(ui->menu_RE_Tools->addAction(tr("CANopen")), &QAction::triggered, this, [this]() {
 +        static QPointer<CANopenWindow> canopenWindow;
 +        if (!canopenWindow) canopenWindow = new CANopenWindow(this);
@@ -1506,6 +1595,413 @@ index 56ba04c..ccd4d42 100644
      //Automatically create the connection window so it can be updated even if we never opened it.
      connectionWindow = new ConnectionWindow();
      connect(this, SIGNAL(suspendCapturing(bool)), connectionWindow, SLOT(setSuspendAll(bool)));
+diff --git a/pp2canlog.cpp b/pp2canlog.cpp
+new file mode 100755
+index 0000000..9b8780a
+--- /dev/null
++++ b/pp2canlog.cpp
+@@ -0,0 +1,135 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#include "pp2canlog.h"
++#include "pp2canlogfmt.h"
++
++#include <QDateTime>
++#include <QFile>
++#include <QFileDialog>
++#include <QInputDialog>
++#include <QLineEdit>
++#include <QMessageBox>
++#include <QSettings>
++
++namespace PP2CANLog {
++
++bool isFile(const QString &filename)
++{
++    QFile f(filename);
++    if (!f.open(QIODevice::ReadOnly))
++        return false;
++    QByteArray l1 = f.readLine(256).trimmed();
++    QByteArray l2 = f.readLine(256).trimmed();
++    return pp2canlog::isHeader(l1.toStdString(), l2.toStdString());
++}
++
++bool load(const QString &filename, QVector<GuiFrame> *frames)
++{
++    QFile f(filename);
++    if (!f.open(QIODevice::ReadOnly))
++        return false;
++
++    const qint64 DAY = 24ll * 3600 * 1000000;
++    qint64 dayOffset = 0, last = -1;
++    int parsed = 0, lineNo = 0;
++    pp2canlog::Frame pf;
++
++    while (!f.atEnd())
++    {
++        QByteArray line = f.readLine();
++        lineNo++;
++        if (!pp2canlog::parseLine(line.constData(), size_t(line.size()), pf))
++        {
++            if (lineNo <= 5)
++                continue;                       /* header */
++            if (line.trimmed().isEmpty())
++                continue;
++            if (parsed == 0 && lineNo > 50)
++                return false;                   /* not a PP2CAN log after all */
++            continue;                           /* skip a damaged line, keep going */
++        }
++        qint64 t = pf.timeUs + dayOffset;
++        if (last >= 0 && t + DAY / 2 < last)    /* passed midnight */
++        {
++            dayOffset += DAY;
++            t += DAY;
++        }
++        last = t;
++
++        GuiFrame fr = guiMakeFrame(0, pf.id, pf.ext,
++                                   QByteArray(reinterpret_cast<const char *>(pf.data), pf.rtr ? 0 : pf.dlc));
++        if (pf.rtr)
++            fr.setFrameType(GuiFrame::RemoteRequestFrame);
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++        fr.setReceived(pf.rx);
++#else
++        fr.isReceived = pf.rx;
++#endif
++        fr.setTimeStamp(GuiFrame::TimeStamp(0, t));
++        frames->append(fr);
++        parsed++;
++    }
++    return parsed > 0;
++}
++
++bool save(const QString &filename, const QVector<GuiFrame> *frames, const QString &speed)
++{
++    QFile f(filename);
++    if (!f.open(QIODevice::WriteOnly))
++        return false;
++
++    bool anyRx = false;
++    for (const GuiFrame &fr : *frames)
++        if (guiFrameReceived(fr))
++        {
++            anyRx = true;
++            break;
++        }
++    QDateTime now = QDateTime::currentDateTime();
++    std::string date = now.toString("d-M-yyyy  HH-mm").toStdString();
++    f.write(QByteArray::fromStdString(pp2canlog::header(anyRx || frames->isEmpty(), date, speed.toStdString())));
++
++    uint32_t seq = 1;
++    for (const GuiFrame &fr : *frames)
++    {
++        if (fr.frameType() != GUI_DATA_FRAME && fr.frameType() != GuiFrame::RemoteRequestFrame)
++            continue;
++        pp2canlog::Frame pf;
++        pf.rx = guiFrameReceived(fr);
++        pf.seq = seq++;
++        pf.timeUs = guiFrameMicros(fr);
++        pf.ext = fr.hasExtendedFrameFormat();
++        pf.rtr = fr.frameType() == GuiFrame::RemoteRequestFrame;
++        pf.id = fr.frameId();
++        QByteArray d = fr.payload();
++        if (d.size() > 8)
++            continue;                           /* CAN FD frames do not fit the format */
++        pf.dlc = uint8_t(d.size());
++        memcpy(pf.data, d.constData(), size_t(d.size()));
++        f.write(QByteArray::fromStdString(pp2canlog::formatLine(pf)));
++        f.write("\r\n");
++    }
++    return true;
++}
++
++void saveWithDialog(QWidget *parent, const QVector<GuiFrame> *frames)
++{
++    QSettings settings;
++    QString file = QFileDialog::getSaveFileName(parent, QObject::tr("Save Log as PP2CAN"),
++                                                settings.value("FileIO/LoadSaveDirectory").toString(),
++                                                QObject::tr("PP2CAN Log (*.log *.LOG)"));
++    if (file.isEmpty())
++        return;
++    if (!file.contains('.'))
++        file += ".log";
++    bool ok;
++    QString speed = QInputDialog::getText(parent, QObject::tr("Save Log as PP2CAN"),
++                                          QObject::tr("CAN speed for the header (for example 250k)"),
++                                          QLineEdit::Normal, "250k", &ok);
++    if (!ok)
++        return;
++    if (!save(file, frames, speed))
++        QMessageBox::warning(parent, QObject::tr("Save Log as PP2CAN"), QObject::tr("Could not write %1").arg(file));
++}
++
++}
+diff --git a/pp2canlog.h b/pp2canlog.h
+new file mode 100755
+index 0000000..eee8d89
+--- /dev/null
++++ b/pp2canlog.h
+@@ -0,0 +1,38 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef PP2CANLOG_H
++#define PP2CANLOG_H
++
++/*
++ * PP2CAN log files (CANLAB s.r.o.) in SavvyCAN: loading through the normal
++ * "Load Log File" dialog and autodetection (so Playback can replay them,
++ * which is PP2CAN's "File sender"), and saving the current capture in the
++ * same format. Format details in pp2canlogfmt.h.
++ */
++
++#include <QString>
++#include <QVector>
++#include "re/savvycompat.h"
++
++class QWidget;
++
++namespace PP2CANLog {
++
++/* True when the file starts with the PP2CAN header. */
++bool isFile(const QString &filename);
++
++/* Appends the frames of a PP2CAN log. Timestamps are the logged time of
++ * day in microseconds (a log crossing midnight continues past 24 h).
++ * ">" lines are received frames, "<" lines sent frames, all on bus 0. */
++bool load(const QString &filename, QVector<GuiFrame> *frames);
++
++/* Writes data and remote frames (error frames are skipped) as a PP2CAN log.
++ * speed is written into the header, e.g. "250k". */
++bool save(const QString &filename, const QVector<GuiFrame> *frames, const QString &speed);
++
++/* File dialog plus save, for a menu entry. */
++void saveWithDialog(QWidget *parent, const QVector<GuiFrame> *frames);
++
++}
++
++#endif // PP2CANLOG_H
+diff --git a/pp2canlogfmt.h b/pp2canlogfmt.h
+new file mode 100755
+index 0000000..3fc52c7
+--- /dev/null
++++ b/pp2canlogfmt.h
+@@ -0,0 +1,216 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef PP2CANLOGFMT_H
++#define PP2CANLOGFMT_H
++
++/*
++ * PP2CAN text log format (CANLAB s.r.o.), header only and Qt free so it can
++ * be unit tested on the host (tests/gui/pp2canlog_test.cpp).
++ *
++ * File layout, CRLF line endings, as written by PP2CAN:
++ *
++ *   Received messages
++ *   PP2CAN log file - CANLAB s.r.o. - www.canlab.cz
++ *   3-7-2014  10-14                       (date, time of the export)
++ *   CAN speed: 250k
++ *   <TAB>
++ *   >  53114  9:53:44.184:0.00  Ext  828  515  8  192 0 0 255 255 175 17 255
++ *
++ * Data lines have 15 TAB separated columns:
++ *   0  direction, ">" received (and "<" sent, not seen in samples)
++ *   1  sequence number
++ *   2  time of day "   H:M:S.ms:0.00", three leading spaces, every part
++ *      an integer WITHOUT zero padding: "9:53:45.4" is 45 s + 4 ms, not
++ *      45.4 s; the next frames read 45.8, 45.11, 45.15. The ":0.00" suffix
++ *      is kept as is, its meaning is not documented.
++ *   3  "Ext" or "Std"
++ *   4  extended: identifier bits 28..18 in decimal; standard: identifier
++ *   5  extended: identifier bits 17..0 in decimal; standard: " "
++ *   6  DLC
++ *   7..14  data bytes in decimal, unused columns hold a single space
++ *
++ * Verified against a 1,007,234 line capture from PP2CAN (extended frames,
++ * DLC 3 and 8). Standard frames and sent frames are parsed with the layout
++ * above but were not present in the sample.
++ */
++
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <string>
++
++namespace pp2canlog {
++
++struct Frame {
++    bool     rx = true;
++    uint32_t seq = 0;
++    int64_t  timeUs = 0;          /* time of day in microseconds */
++    bool     ext = false;
++    bool     rtr = false;
++    uint32_t id = 0;
++    uint8_t  dlc = 0;
++    uint8_t  data[8] = {};
++};
++
++namespace detail {
++/* splits on TAB without allocating; returns the number of fields */
++inline int split(const char *s, size_t n, const char **f, size_t *fl, int maxf)
++{
++    int k = 0;
++    size_t start = 0;
++    for (size_t i = 0; i <= n && k < maxf; i++)
++    {
++        if (i == n || s[i] == '\t')
++        {
++            f[k] = s + start;
++            fl[k] = i - start;
++            k++;
++            start = i + 1;
++        }
++    }
++    return k;
++}
++
++inline bool num(const char *s, size_t n, uint32_t &v)
++{
++    while (n && (*s == ' ')) { s++; n--; }
++    while (n && (s[n - 1] == ' ' || s[n - 1] == '\r' || s[n - 1] == '\n')) n--;
++    if (!n || n > 10)
++        return false;
++    uint64_t x = 0;
++    for (size_t i = 0; i < n; i++)
++    {
++        if (s[i] < '0' || s[i] > '9')
++            return false;
++        x = x * 10 + uint64_t(s[i] - '0');
++    }
++    if (x > 0xFFFFFFFFull)
++        return false;
++    v = uint32_t(x);
++    return true;
++}
++
++inline bool blank(const char *s, size_t n)
++{
++    for (size_t i = 0; i < n; i++)
++        if (s[i] != ' ' && s[i] != '\r' && s[i] != '\n')
++            return false;
++    return true;
++}
++}
++
++/* True for the first line of a PP2CAN log ("Received messages" or "Sent
++ * messages") followed by the PP2CAN signature line. */
++inline bool isHeader(const std::string &line1, const std::string &line2)
++{
++    return (line1.rfind("Received messages", 0) == 0 || line1.rfind("Sent messages", 0) == 0)
++           && line2.find("PP2CAN log file") != std::string::npos;
++}
++
++/* Parses one data line. Returns false for header, blank or malformed lines. */
++inline bool parseLine(const char *line, size_t len, Frame &f)
++{
++    using namespace detail;
++    const char *c[16];
++    size_t cl[16];
++    while (len && (line[len - 1] == '\r' || line[len - 1] == '\n'))
++        len--;
++    int n = split(line, len, c, cl, 16);
++    if (n < 7)
++        return false;
++
++    if (cl[0] != 1 || (c[0][0] != '>' && c[0][0] != '<'))
++        return false;
++    f = Frame();
++    f.rx = c[0][0] == '>';
++    if (!num(c[1], cl[1], f.seq))
++        return false;
++
++    /* time "   H:M:S.ms:0.00", all parts unpadded integers */
++    unsigned h, m, sec, ms;
++    char tbuf[40];
++    size_t tl = cl[2] < sizeof(tbuf) - 1 ? cl[2] : sizeof(tbuf) - 1;
++    memcpy(tbuf, c[2], tl);
++    tbuf[tl] = 0;
++    if (sscanf(tbuf, " %u:%u:%u.%u", &h, &m, &sec, &ms) != 4 || m > 59 || sec > 59 || ms > 999)
++        return false;
++    f.timeUs = ((int64_t(h) * 60 + m) * 60 + sec) * 1000000ll + int64_t(ms) * 1000;
++
++    std::string type(c[3], cl[3]);
++    if (type.compare(0, 3, "Ext") == 0)
++        f.ext = true;
++    else if (type.compare(0, 3, "Std") != 0)
++        return false;
++    f.rtr = type.find('R') != std::string::npos || type.find('r') != std::string::npos;
++
++    uint32_t a = 0, b = 0, dlc = 0;
++    if (!num(c[4], cl[4], a))
++        return false;
++    if (f.ext)
++    {
++        if (!num(c[5], cl[5], b) || a > 0x7FF || b > 0x3FFFF)
++            return false;
++        f.id = (a << 18) | b;
++    }
++    else
++    {
++        if (a > 0x7FF)
++            return false;
++        f.id = a;
++    }
++    if (!num(c[6], cl[6], dlc) || dlc > 8)
++        return false;
++    f.dlc = uint8_t(dlc);
++    if (!f.rtr)
++    {
++        if (n < 7 + int(dlc))
++            return false;
++        for (unsigned i = 0; i < dlc; i++)
++        {
++            uint32_t v;
++            if (!num(c[7 + i], cl[7 + i], v) || v > 255)
++                return false;
++            f.data[i] = uint8_t(v);
++        }
++    }
++    return true;
++}
++
++/* One data line in PP2CAN layout, without the line ending. */
++inline std::string formatLine(const Frame &f)
++{
++    char buf[160];
++    int64_t t = f.timeUs < 0 ? 0 : f.timeUs;
++    unsigned ms = unsigned((t / 1000) % 1000), sec = unsigned((t / 1000000) % 60);
++    unsigned m = unsigned((t / 60000000) % 60), h = unsigned(t / 3600000000ll);
++    int k = snprintf(buf, sizeof(buf), "%c\t%u\t   %u:%u:%u.%u:0.00\t%s\t",
++                     f.rx ? '>' : '<', f.seq, h, m, sec, ms, f.ext ? "Ext" : "Std");
++    std::string s(buf, size_t(k));
++    if (f.ext)
++        k = snprintf(buf, sizeof(buf), "%u\t%u\t%u", (f.id >> 18) & 0x7FF, f.id & 0x3FFFF, unsigned(f.dlc));
++    else
++        k = snprintf(buf, sizeof(buf), "%u\t \t%u", f.id & 0x7FF, unsigned(f.dlc));
++    s.append(buf, size_t(k));
++    for (int i = 0; i < 8; i++)
++    {
++        if (i < f.dlc && !f.rtr)
++            k = snprintf(buf, sizeof(buf), "\t%u", unsigned(f.data[i]));
++        else
++            k = snprintf(buf, sizeof(buf), "\t ");
++        s.append(buf, size_t(k));
++    }
++    return s;
++}
++
++/* The five header lines (without line endings). date like "3-7-2014  10-14",
++ * speed like "250k". */
++inline std::string header(bool received, const std::string &date, const std::string &speed)
++{
++    return std::string(received ? "Received messages" : "Sent messages") + "\r\n"
++           "PP2CAN log file - CANLAB s.r.o. - www.canlab.cz\r\n" + date + "\r\n"
++           "CAN speed: " + speed + "\r\n\t\r\n";
++}
++
++} // namespace pp2canlog
++
++#endif // PP2CANLOGFMT_H
 diff --git a/re/busstatswindow.cpp b/re/busstatswindow.cpp
 new file mode 100755
 index 0000000..f924341
@@ -1871,6 +2367,388 @@ index 0000000..3dd82ec
 +};
 +
 +#endif // BUSSTATSWINDOW_H
+diff --git a/re/cancalcwindow.cpp b/re/cancalcwindow.cpp
+new file mode 100755
+index 0000000..aa891ac
+--- /dev/null
++++ b/re/cancalcwindow.cpp
+@@ -0,0 +1,224 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#include "cancalcwindow.h"
++#include "canidcalc.h"
++
++#include <QCheckBox>
++#include <QFontDatabase>
++#include <QFormLayout>
++#include <QGroupBox>
++#include <QHBoxLayout>
++#include <QLabel>
++#include <QLineEdit>
++#include <QVBoxLayout>
++
++using namespace canidcalc;
++
++namespace {
++QString hx(quint32 v, int w) { return QString::number(v, 16).toUpper().rightJustified(w, '0'); }
++bool parseHex(const QLineEdit *e, quint32 &v)
++{
++    bool ok;
++    QString t = e->text().trimmed();
++    if (t.startsWith("0x", Qt::CaseInsensitive))
++        t = t.mid(2);
++    v = t.toUInt(&ok, 16);
++    return ok;
++}
++}
++
++QLineEdit *CanCalcWindow::hexEdit(int width)
++{
++    QLineEdit *e = new QLineEdit(this);
++    e->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
++    e->setMaximumWidth(width);
++    return e;
++}
++
++CanCalcWindow::CanCalcWindow(QWidget *parent) : QWidget(parent, Qt::Window)
++{
++    setWindowTitle(tr("CAN Calculator"));
++
++    idEdit = hexEdit(140);
++    decEdit = hexEdit(140);
++    extended = new QCheckBox(tr("extended (29-bit)"), this);
++    extended->setChecked(true);
++    rtr = new QCheckBox(tr("RTR"), this);
++    binLabel = new QLabel(this);
++    binLabel->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
++    binLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
++
++    QGroupBox *idBox = new QGroupBox(tr("Identifier"), this);
++    QFormLayout *idForm = new QFormLayout(idBox);
++    QHBoxLayout *idRow = new QHBoxLayout;
++    idRow->addWidget(idEdit);
++    idRow->addWidget(extended);
++    idRow->addWidget(rtr);
++    idRow->addStretch(1);
++    idForm->addRow(tr("Hex"), idRow);
++    idForm->addRow(tr("Decimal"), decEdit);
++    idForm->addRow(tr("Binary"), binLabel);
++
++    baseEdit = hexEdit(80);
++    extEdit = hexEdit(100);
++    QGroupBox *partsBox = new QGroupBox(tr("11 + 18 bit (base and extension, hex)"), this);
++    QHBoxLayout *partsRow = new QHBoxLayout(partsBox);
++    partsRow->addWidget(new QLabel(tr("base ID[28:18]"), this));
++    partsRow->addWidget(baseEdit);
++    partsRow->addWidget(new QLabel(tr("extension ID[17:0]"), this));
++    partsRow->addWidget(extEdit);
++    partsRow->addStretch(1);
++
++    const char *mcpNames[4] = { "SIDH", "SIDL", "EID8", "EID0" };
++    QGroupBox *mcpBox = new QGroupBox(tr("MCP2510 / MCP2515 registers (hex)"), this);
++    QHBoxLayout *mcpRow = new QHBoxLayout(mcpBox);
++    for (int i = 0; i < 4; i++)
++    {
++        mcp[i] = hexEdit(50);
++        mcpRow->addWidget(new QLabel(mcpNames[i], this));
++        mcpRow->addWidget(mcp[i]);
++    }
++    mcpRow->addStretch(1);
++
++    QGroupBox *sjaBox = new QGroupBox(tr("SJA1000 PeliCAN identifier registers (hex, ID3/ID4 extended only)"), this);
++    QHBoxLayout *sjaRow = new QHBoxLayout(sjaBox);
++    for (int i = 0; i < 4; i++)
++    {
++        sja[i] = hexEdit(50);
++        sjaRow->addWidget(new QLabel(QString("ID%1").arg(i + 1), this));
++        sjaRow->addWidget(sja[i]);
++    }
++    sjaRow->addStretch(1);
++
++    status = new QLabel(this);
++
++    QVBoxLayout *layout = new QVBoxLayout(this);
++    layout->addWidget(idBox);
++    layout->addWidget(partsBox);
++    layout->addWidget(mcpBox);
++    layout->addWidget(sjaBox);
++    layout->addWidget(status);
++    layout->addStretch(1);
++
++    connect(idEdit, &QLineEdit::textEdited, this, [this]() { recompute(FROM_ID); });
++    connect(decEdit, &QLineEdit::textEdited, this, [this]() {
++        bool ok;
++        quint32 v = decEdit->text().trimmed().toUInt(&ok, 10);
++        if (ok) { busy = true; idEdit->setText(hx(v, extended->isChecked() ? 8 : 3)); busy = false; recompute(FROM_ID); }
++    });
++    connect(baseEdit, &QLineEdit::textEdited, this, [this]() { recompute(FROM_PARTS); });
++    connect(extEdit, &QLineEdit::textEdited, this, [this]() { recompute(FROM_PARTS); });
++    for (int i = 0; i < 4; i++)
++    {
++        connect(mcp[i], &QLineEdit::textEdited, this, [this]() { recompute(FROM_MCP); });
++        connect(sja[i], &QLineEdit::textEdited, this, [this]() { recompute(FROM_SJA); });
++    }
++    connect(extended, &QCheckBox::toggled, this, [this]() { recompute(FROM_FLAGS); });
++    connect(rtr, &QCheckBox::toggled, this, [this]() { recompute(FROM_FLAGS); });
++
++    idEdit->setText("1ABCDEF0");
++    recompute(FROM_ID);
++    resize(620, 0);
++}
++
++void CanCalcWindow::recompute(Source src)
++{
++    if (busy)
++        return;
++    bool ext = extended->isChecked();
++    quint32 id = 0;
++    bool ok = true;
++
++    switch (src)
++    {
++    case FROM_ID:
++    case FROM_FLAGS:
++        ok = parseHex(idEdit, id);
++        break;
++    case FROM_PARTS:
++    {
++        quint32 b = 0, e = 0;
++        ok = parseHex(baseEdit, b) && parseHex(extEdit, e) && b <= 0x7FF && e <= 0x3FFFF;
++        id = join(b, e);
++        if (ok && !ext) { busy = true; extended->setChecked(true); busy = false; ext = true; }
++        break;
++    }
++    case FROM_MCP:
++    {
++        quint32 v[4];
++        for (int i = 0; i < 4 && ok; i++)
++            ok = parseHex(mcp[i], v[i]) && v[i] <= 0xFF;
++        if (ok)
++        {
++            Mcp m = { quint8(v[0]), quint8(v[1]), quint8(v[2]), quint8(v[3]) };
++            bool e;
++            id = fromMcp(m, e);
++            busy = true; extended->setChecked(e); busy = false;
++            ext = e;
++        }
++        break;
++    }
++    case FROM_SJA:
++    {
++        Sja s = {};
++        s.count = ext ? 4 : 2;
++        for (int i = 0; i < s.count && ok; i++)
++        {
++            quint32 v;
++            ok = parseHex(sja[i], v) && v <= 0xFF;
++            s.id[i] = quint8(v);
++        }
++        if (ok)
++        {
++            bool r;
++            id = fromSja(s, ext, r);
++            busy = true; rtr->setChecked(r); busy = false;
++        }
++        break;
++    }
++    }
++
++    quint32 max = ext ? 0x1FFFFFFF : 0x7FF;
++    if (!ok || id > max)
++    {
++        status->setText(ok ? tr("identifier too large for %1 frames (max 0x%2)").arg(ext ? "extended" : "standard", hx(max, 0))
++                           : tr("enter hex numbers"));
++        return;
++    }
++    status->setText(QString());
++    busy = true;
++    if (src != FROM_ID)
++        idEdit->setText(hx(id, ext ? 8 : 3));
++    showId(id);
++    busy = false;
++}
++
++void CanCalcWindow::showId(quint32 id)
++{
++    bool ext = extended->isChecked();
++    if (!decEdit->hasFocus())
++        decEdit->setText(QString::number(id));
++    QString bin = QString::number(id, 2).rightJustified(ext ? 29 : 11, '0');
++    for (int i = bin.size() - 4; i > 0; i -= 4)
++        bin.insert(i, ' ');
++    binLabel->setText(bin);
++
++    baseEdit->setEnabled(ext);
++    extEdit->setEnabled(ext);
++    if (!baseEdit->hasFocus()) baseEdit->setText(ext ? hx(baseOf(id), 3) : QString());
++    if (!extEdit->hasFocus()) extEdit->setText(ext ? hx(extOf(id), 5) : QString());
++
++    Mcp m = toMcp(id, ext);
++    const quint8 mv[4] = { m.sidh, m.sidl, m.eid8, m.eid0 };
++    for (int i = 0; i < 4; i++)
++        if (!mcp[i]->hasFocus())
++            mcp[i]->setText(hx(mv[i], 2));
++
++    Sja s = toSja(id, ext, rtr->isChecked());
++    for (int i = 0; i < 4; i++)
++    {
++        sja[i]->setEnabled(i < s.count);
++        if (!sja[i]->hasFocus())
++            sja[i]->setText(i < s.count ? hx(s.id[i], 2) : QString());
++    }
++}
+diff --git a/re/cancalcwindow.h b/re/cancalcwindow.h
+new file mode 100755
+index 0000000..0a4126d
+--- /dev/null
++++ b/re/cancalcwindow.h
+@@ -0,0 +1,39 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef CANCALCWINDOW_H
++#define CANCALCWINDOW_H
++
++/*
++ * CAN Calculator: one identifier shown as 29/11-bit, as 11+18-bit parts,
++ * and as MCP2510/MCP2515 and SJA1000 (PeliCAN) register values. Editing
++ * any field updates all others. Conversions in canidcalc.h.
++ */
++
++#include <QWidget>
++
++class QLineEdit;
++class QCheckBox;
++class QLabel;
++
++class CanCalcWindow : public QWidget
++{
++    Q_OBJECT
++
++public:
++    explicit CanCalcWindow(QWidget *parent = nullptr);
++
++private:
++    enum Source { FROM_ID, FROM_PARTS, FROM_MCP, FROM_SJA, FROM_FLAGS };
++    void recompute(Source src);
++    void showId(quint32 id);
++    QLineEdit *hexEdit(int width);
++
++    QLineEdit *idEdit, *decEdit, *baseEdit, *extEdit;
++    QLineEdit *mcp[4];
++    QLineEdit *sja[4];
++    QCheckBox *extended, *rtr;
++    QLabel    *binLabel, *status;
++    bool       busy = false;
++};
++
++#endif // CANCALCWINDOW_H
+diff --git a/re/canidcalc.h b/re/canidcalc.h
+new file mode 100755
+index 0000000..48bae47
+--- /dev/null
++++ b/re/canidcalc.h
+@@ -0,0 +1,101 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef CANIDCALC_H
++#define CANIDCALC_H
++
++/*
++ * CAN identifier conversions, header only, no Qt, so they can be unit
++ * tested on the host (tests/gui/canidcalc_test.cpp).
++ *
++ *   29-bit identifier  <->  11-bit base + 18-bit extension ("11+18")
++ *   identifier         <->  MCP2510 / MCP2515 TX/RX buffer registers
++ *                           SIDH, SIDL, EID8, EID0
++ *   identifier         <->  SJA1000 (PeliCAN mode) identifier registers
++ *                           ID1..ID2 (standard) or ID1..ID4 (extended)
++ *
++ * MCP2515 data sheet, registers 3-3..3-6:
++ *   SIDH = SID[10:3]
++ *   SIDL = SID[2:0] << 5 | EXIDE << 3 | EID[17:16]
++ *   EID8 = EID[15:8], EID0 = EID[7:0]
++ * SJA1000 data sheet, PeliCAN TX/RX buffer:
++ *   standard: ID1 = ID[10:3], ID2 = ID[2:0] << 5 | RTR << 4
++ *   extended: ID1 = ID[28:21], ID2 = ID[20:13], ID3 = ID[12:5],
++ *             ID4 = ID[4:0] << 3 | RTR << 2
++ */
++
++#include <cstdint>
++
++namespace canidcalc {
++
++struct Mcp {
++    uint8_t sidh, sidl, eid8, eid0;
++};
++
++struct Sja {
++    uint8_t id[4];
++    int     count;                  /* 2 for standard, 4 for extended frames */
++};
++
++inline uint32_t baseOf(uint32_t id29) { return (id29 >> 18) & 0x7FF; }
++inline uint32_t extOf(uint32_t id29)  { return id29 & 0x3FFFF; }
++inline uint32_t join(uint32_t base11, uint32_t ext18) { return ((base11 & 0x7FF) << 18) | (ext18 & 0x3FFFF); }
++
++inline Mcp toMcp(uint32_t id, bool extended)
++{
++    Mcp r;
++    uint32_t sid = extended ? baseOf(id) : (id & 0x7FF);
++    uint32_t eid = extended ? extOf(id) : 0;
++    r.sidh = uint8_t(sid >> 3);
++    r.sidl = uint8_t(((sid & 0x7) << 5) | (extended ? 0x08 : 0x00) | ((eid >> 16) & 0x3));
++    r.eid8 = uint8_t(eid >> 8);
++    r.eid0 = uint8_t(eid);
++    return r;
++}
++
++/* Returns the identifier; sets extended from the EXIDE bit. */
++inline uint32_t fromMcp(const Mcp &m, bool &extended)
++{
++    uint32_t sid = (uint32_t(m.sidh) << 3) | (uint32_t(m.sidl) >> 5);
++    extended = (m.sidl & 0x08) != 0;
++    if (!extended)
++        return sid;
++    uint32_t eid = (uint32_t(m.sidl & 0x3) << 16) | (uint32_t(m.eid8) << 8) | m.eid0;
++    return join(sid, eid);
++}
++
++inline Sja toSja(uint32_t id, bool extended, bool rtr)
++{
++    Sja r = {};
++    if (!extended)
++    {
++        id &= 0x7FF;
++        r.id[0] = uint8_t(id >> 3);
++        r.id[1] = uint8_t(((id & 0x7) << 5) | (rtr ? 0x10 : 0));
++        r.count = 2;
++    }
++    else
++    {
++        id &= 0x1FFFFFFF;
++        r.id[0] = uint8_t(id >> 21);
++        r.id[1] = uint8_t(id >> 13);
++        r.id[2] = uint8_t(id >> 5);
++        r.id[3] = uint8_t(((id & 0x1F) << 3) | (rtr ? 0x04 : 0));
++        r.count = 4;
++    }
++    return r;
++}
++
++inline uint32_t fromSja(const Sja &s, bool extended, bool &rtr)
++{
++    if (!extended)
++    {
++        rtr = (s.id[1] & 0x10) != 0;
++        return (uint32_t(s.id[0]) << 3) | (uint32_t(s.id[1]) >> 5);
++    }
++    rtr = (s.id[3] & 0x04) != 0;
++    return (uint32_t(s.id[0]) << 21) | (uint32_t(s.id[1]) << 13) | (uint32_t(s.id[2]) << 5) | (uint32_t(s.id[3]) >> 3);
++}
++
++} // namespace canidcalc
++
++#endif // CANIDCALC_H
 diff --git a/re/canopenwindow.cpp b/re/canopenwindow.cpp
 new file mode 100755
 index 0000000..9db78a1
@@ -2637,6 +3515,721 @@ index 0000000..9e815b7
 +};
 +
 +#endif // CANOPENWINDOW_H
+diff --git a/re/datapanelwindow.cpp b/re/datapanelwindow.cpp
+new file mode 100755
+index 0000000..0a888f3
+--- /dev/null
++++ b/re/datapanelwindow.cpp
+@@ -0,0 +1,223 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#include "datapanelwindow.h"
++#include "savvycompat.h"
++
++#include <QCheckBox>
++#include <QComboBox>
++#include <QGridLayout>
++#include <QGroupBox>
++#include <QHBoxLayout>
++#include <QLabel>
++#include <QLineEdit>
++#include <QPushButton>
++#include <QSlider>
++#include <QSpinBox>
++#include <QVBoxLayout>
++
++#include "connections/canconmanager.h"
++
++DataPanelWindow::DataPanelWindow(QWidget *parent) : QWidget(parent, Qt::Window)
++{
++    setWindowTitle(tr("Data Panel"));
++
++    /* --- frame settings ------------------------------------------------- */
++    busSpin = new QSpinBox(this);
++    busSpin->setRange(0, 63);
++    idEdit = new QLineEdit("123", this);
++    idEdit->setMaximumWidth(110);
++    idEdit->setToolTip(tr("identifier, hex"));
++    extBox = new QCheckBox(tr("extended"), this);
++    lenSpin = new QSpinBox(this);
++    lenSpin->setRange(0, 8);
++    lenSpin->setValue(8);
++    onChangeBox = new QCheckBox(tr("send on change"), this);
++    onChangeBox->setChecked(true);
++    periodicBox = new QCheckBox(tr("periodic"), this);
++    intervalSpin = new QSpinBox(this);
++    intervalSpin->setRange(1, 60000);
++    intervalSpin->setValue(100);
++    intervalSpin->setSuffix(" ms");
++    QPushButton *sendBtn = new QPushButton(tr("Send"), this);
++    status = new QLabel(this);
++
++    QHBoxLayout *top = new QHBoxLayout;
++    top->addWidget(new QLabel(tr("Bus"), this));
++    top->addWidget(busSpin);
++    top->addWidget(new QLabel(tr("ID"), this));
++    top->addWidget(idEdit);
++    top->addWidget(extBox);
++    top->addWidget(new QLabel(tr("Length"), this));
++    top->addWidget(lenSpin);
++    top->addSpacing(12);
++    top->addWidget(onChangeBox);
++    top->addWidget(periodicBox);
++    top->addWidget(intervalSpin);
++    top->addWidget(sendBtn);
++    top->addStretch(1);
++
++    /* --- byte rows ------------------------------------------------------ */
++    QGroupBox *bytesBox = new QGroupBox(tr("Data bytes (bits shown 7..0)"), this);
++    QGridLayout *grid = new QGridLayout(bytesBox);
++    for (int b = 7; b >= 0; b--)
++        grid->addWidget(new QLabel(QString::number(b), this), 0, 3 + (7 - b), Qt::AlignHCenter);
++    for (int i = 0; i < 8; i++)
++    {
++        int row = i + 1;
++        grid->addWidget(new QLabel(QString("D%1").arg(i), this), row, 0);
++        slider[i] = new QSlider(Qt::Horizontal, this);
++        slider[i]->setRange(0, 255);
++        slider[i]->setMinimumWidth(220);
++        spin[i] = new QSpinBox(this);
++        spin[i]->setRange(0, 255);
++        spin[i]->setDisplayIntegerBase(16);
++        spin[i]->setPrefix("0x");
++        grid->addWidget(slider[i], row, 1);
++        grid->addWidget(spin[i], row, 2);
++        for (int b = 7; b >= 0; b--)
++        {
++            bit[i][b] = new QCheckBox(this);
++            grid->addWidget(bit[i][b], row, 3 + (7 - b), Qt::AlignHCenter);
++            connect(bit[i][b], &QCheckBox::toggled, this, [this, i, b](bool on) {
++                if (busy) return;
++                setByte(i, on ? (bytes[i] | (1 << b)) : (bytes[i] & ~(1 << b)));
++            });
++        }
++        connect(slider[i], &QSlider::valueChanged, this, [this, i](int v) { if (!busy) setByte(i, v); });
++        connect(spin[i], QOverload<int>::of(&QSpinBox::valueChanged), this, [this, i](int v) { if (!busy) setByte(i, v); });
++    }
++
++    /* --- 16-bit value and ASCII ----------------------------------------- */
++    slider16 = new QSlider(Qt::Horizontal, this);
++    slider16->setRange(0, 65535);
++    spin16 = new QSpinBox(this);
++    spin16->setRange(0, 65535);
++    start16 = new QSpinBox(this);
++    start16->setRange(0, 6);
++    start16->setPrefix("D");
++    order16 = new QComboBox(this);
++    order16->addItems({ tr("little endian (Intel)"), tr("big endian (Motorola)") });
++    connect(slider16, &QSlider::valueChanged, this, [this](int v) { if (!busy) { busy = true; spin16->setValue(v); busy = false; apply16(); } });
++    connect(spin16, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) { if (!busy) { busy = true; slider16->setValue(v); busy = false; apply16(); } });
++    connect(start16, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() { apply16(); });
++    connect(order16, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() { apply16(); });
++
++    QGroupBox *box16 = new QGroupBox(tr("16-bit value"), this);
++    QHBoxLayout *row16 = new QHBoxLayout(box16);
++    row16->addWidget(slider16, 1);
++    row16->addWidget(spin16);
++    row16->addWidget(new QLabel(tr("at"), this));
++    row16->addWidget(start16);
++    row16->addWidget(order16);
++
++    asciiEdit = new QLineEdit(this);
++    asciiEdit->setPlaceholderText(tr("text, up to the frame length"));
++    QPushButton *asciiBtn = new QPushButton(tr("Fill from text"), this);
++    connect(asciiBtn, &QPushButton::clicked, this, [this]() {
++        QByteArray t = asciiEdit->text().toLatin1();
++        busy = true;
++        for (int i = 0; i < 8; i++)
++            bytes[i] = i < t.size() ? quint8(t[i]) : 0;
++        busy = false;
++        refreshWidgets();
++        changed();
++    });
++    QGroupBox *asciiBox = new QGroupBox(tr("ASCII"), this);
++    QHBoxLayout *asciiRow = new QHBoxLayout(asciiBox);
++    asciiRow->addWidget(asciiEdit, 1);
++    asciiRow->addWidget(asciiBtn);
++
++    QVBoxLayout *layout = new QVBoxLayout(this);
++    layout->addLayout(top);
++    layout->addWidget(bytesBox);
++    layout->addWidget(box16);
++    layout->addWidget(asciiBox);
++    layout->addWidget(status);
++
++    connect(sendBtn, &QPushButton::clicked, this, &DataPanelWindow::sendNow);
++    connect(lenSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &DataPanelWindow::lengthChanged);
++    connect(periodicBox, &QCheckBox::toggled, this, [this](bool on) {
++        if (on) periodTimer.start(intervalSpin->value()); else periodTimer.stop();
++    });
++    connect(intervalSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
++        if (periodTimer.isActive()) periodTimer.start(v);
++    });
++    periodTimer.setTimerType(Qt::PreciseTimer);   /* default coarse timers run in 15.6 ms steps on Windows */
++    connect(&periodTimer, &QTimer::timeout, this, &DataPanelWindow::sendNow);
++    changeTimer.setSingleShot(true);
++    connect(&changeTimer, &QTimer::timeout, this, &DataPanelWindow::sendNow);
++
++    refreshWidgets();
++    lengthChanged();
++}
++
++void DataPanelWindow::setByte(int i, int value)
++{
++    bytes[i] = quint8(value);
++    refreshWidgets();
++    changed();
++}
++
++void DataPanelWindow::apply16()
++{
++    int v = spin16->value();
++    int at = start16->value();
++    bool big = order16->currentIndex() == 1;
++    bytes[at] = quint8(big ? (v >> 8) : v);
++    bytes[at + 1] = quint8(big ? v : (v >> 8));
++    refreshWidgets();
++    changed();
++}
++
++void DataPanelWindow::refreshWidgets()
++{
++    busy = true;
++    for (int i = 0; i < 8; i++)
++    {
++        slider[i]->setValue(bytes[i]);
++        spin[i]->setValue(bytes[i]);
++        for (int b = 0; b < 8; b++)
++            bit[i][b]->setChecked(bytes[i] & (1 << b));
++    }
++    busy = false;
++}
++
++void DataPanelWindow::lengthChanged()
++{
++    int len = lenSpin->value();
++    for (int i = 0; i < 8; i++)
++    {
++        slider[i]->setEnabled(i < len);
++        spin[i]->setEnabled(i < len);
++        for (int b = 0; b < 8; b++)
++            bit[i][b]->setEnabled(i < len);
++    }
++    start16->setMaximum(qMax(0, len - 2));
++}
++
++void DataPanelWindow::changed()
++{
++    /* coalesce slider drags: at most one frame per 10 ms */
++    if (onChangeBox->isChecked() && !changeTimer.isActive())
++        changeTimer.start(10);
++}
++
++void DataPanelWindow::sendNow()
++{
++    bool ok;
++    QString t = idEdit->text().trimmed();
++    if (t.startsWith("0x", Qt::CaseInsensitive))
++        t = t.mid(2);
++    quint32 id = t.toUInt(&ok, 16);
++    bool ext = extBox->isChecked() || id > 0x7FF;
++    if (!ok || id > 0x1FFFFFFF)
++    {
++        status->setText(tr("ID is a hex number"));
++        return;
++    }
++    QByteArray data(reinterpret_cast<const char *>(bytes), lenSpin->value());
++    CANConManager::getInstance()->sendFrame(guiMakeFrame(busSpin->value(), id, ext, data));
++    sentCount++;
++    status->setText(tr("sent %1 frames, last: %2 [%3] %4").arg(sentCount)
++                        .arg(QString::number(id, 16).toUpper()).arg(data.size()).arg(QString(data.toHex(' ').toUpper())));
++}
+diff --git a/re/datapanelwindow.h b/re/datapanelwindow.h
+new file mode 100755
+index 0000000..e38882d
+--- /dev/null
++++ b/re/datapanelwindow.h
+@@ -0,0 +1,62 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef DATAPANELWINDOW_H
++#define DATAPANELWINDOW_H
++
++/*
++ * Data Panel: one classic CAN frame edited live. Per data byte a slider,
++ * a hex spin box and eight bit check boxes; a 16-bit value slider that
++ * writes two bytes in little or big endian order; and a text field that
++ * fills the data bytes with ASCII. The frame is sent on every change
++ * and/or periodically. Covers the "data sender", "bit sender" and "ASCII
++ * sender" tools of PP2CAN.
++ */
++
++#include <QWidget>
++#include <QTimer>
++
++class QSpinBox;
++class QSlider;
++class QCheckBox;
++class QLineEdit;
++class QComboBox;
++class QLabel;
++
++class DataPanelWindow : public QWidget
++{
++    Q_OBJECT
++
++public:
++    explicit DataPanelWindow(QWidget *parent = nullptr);
++
++private slots:
++    void sendNow();
++    void lengthChanged();
++
++private:
++    void setByte(int i, int value);
++    void refreshWidgets();
++    void changed();
++    void apply16();
++
++    QSpinBox  *busSpin, *lenSpin, *intervalSpin;
++    QLineEdit *idEdit, *asciiEdit;
++    QCheckBox *extBox, *onChangeBox, *periodicBox;
++    QLabel    *status;
++
++    QSlider   *slider[8];
++    QSpinBox  *spin[8];
++    QCheckBox *bit[8][8];
++
++    QSlider   *slider16;
++    QSpinBox  *spin16, *start16;
++    QComboBox *order16;
++
++    quint8  bytes[8] = {};
++    bool    busy = false;
++    int     sentCount = 0;
++    QTimer  periodTimer;
++    QTimer  changeTimer;
++};
++
++#endif // DATAPANELWINDOW_H
+diff --git a/re/responsemeterwindow.cpp b/re/responsemeterwindow.cpp
+new file mode 100755
+index 0000000..6b30f30
+--- /dev/null
++++ b/re/responsemeterwindow.cpp
+@@ -0,0 +1,256 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#include "responsemeterwindow.h"
++
++#include <QComboBox>
++#include <QDateTime>
++#include <QFormLayout>
++#include <QHBoxLayout>
++#include <QHeaderView>
++#include <QLabel>
++#include <QLineEdit>
++#include <QPushButton>
++#include <QSpinBox>
++#include <QTableWidget>
++#include <QVBoxLayout>
++#include <QtMath>
++
++#include "connections/canconmanager.h"
++
++namespace {
++const int TABLE_ROWS = 50;
++QString ms(qint64 us) { return QString::number(us / 1000.0, 'f', 3) + " ms"; }
++}
++
++ResponseMeterWindow::ResponseMeterWindow(QWidget *parent) : QWidget(parent, Qt::Window)
++{
++    setWindowTitle(tr("Response Meter"));
++    resize(640, 640);
++
++    busSpin = new QSpinBox(this);
++    busSpin->setRange(0, 63);
++    reqIdEdit = new QLineEdit("605", this);
++    respIdEdit = new QLineEdit("585", this);
++    reqIdEdit->setToolTip(tr("hex; more than 3 digits or above 7FF means a 29-bit identifier"));
++    respIdEdit->setToolTip(reqIdEdit->toolTip());
++    modeCombo = new QComboBox(this);
++    modeCombo->addItems({ tr("Watch: request sent by another node"), tr("Send: this window sends the request") });
++    reqDataEdit = new QLineEdit("40 00 10 00 00 00 00 00", this);
++    reqDataEdit->setToolTip(tr("request data, hex bytes (send mode)"));
++    periodSpin = new QSpinBox(this);
++    periodSpin->setRange(5, 60000);
++    periodSpin->setValue(100);
++    periodSpin->setSuffix(" ms");
++    countSpin = new QSpinBox(this);
++    countSpin->setRange(0, 1000000);
++    countSpin->setValue(100);
++    countSpin->setSpecialValueText(tr("continuous"));
++    timeoutSpin = new QSpinBox(this);
++    timeoutSpin->setRange(1, 60000);
++    timeoutSpin->setValue(1000);
++    timeoutSpin->setSuffix(" ms");
++
++    QFormLayout *form = new QFormLayout;
++    form->addRow(tr("Bus"), busSpin);
++    form->addRow(tr("Request ID"), reqIdEdit);
++    form->addRow(tr("Response ID"), respIdEdit);
++    form->addRow(tr("Mode"), modeCombo);
++    form->addRow(tr("Request data"), reqDataEdit);
++    form->addRow(tr("Period"), periodSpin);
++    form->addRow(tr("Requests"), countSpin);
++    form->addRow(tr("Timeout"), timeoutSpin);
++
++    startBtn = new QPushButton(tr("Start"), this);
++    QPushButton *resetBtn = new QPushButton(tr("Reset"), this);
++    connect(startBtn, &QPushButton::clicked, this, &ResponseMeterWindow::startStop);
++    connect(resetBtn, &QPushButton::clicked, this, &ResponseMeterWindow::reset);
++    QHBoxLayout *buttons = new QHBoxLayout;
++    buttons->addWidget(startBtn);
++    buttons->addWidget(resetBtn);
++    buttons->addStretch(1);
++
++    statsLabel = new QLabel(this);
++    statsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
++    noteLabel = new QLabel(this);
++    noteLabel->setWordWrap(true);
++
++    table = new QTableWidget(0, 2, this);
++    table->setHorizontalHeaderLabels({ tr("#"), tr("Delay") });
++    table->verticalHeader()->setVisible(false);
++    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
++    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
++
++    QVBoxLayout *layout = new QVBoxLayout(this);
++    layout->addLayout(form);
++    layout->addLayout(buttons);
++    layout->addWidget(statsLabel);
++    layout->addWidget(noteLabel);
++    layout->addWidget(table, 1);
++
++    auto modeChanged = [this]() {
++        bool send = modeCombo->currentIndex() == 1;
++        reqDataEdit->setEnabled(send);
++        periodSpin->setEnabled(send);
++        countSpin->setEnabled(send);
++        noteLabel->setText(send
++            ? tr("Send mode: request time from the host clock, response time from the frame timestamp; the clock "
++                 "offset (a few ms with USB adapters) is included in the result.")
++            : tr("Watch mode: both times from frame timestamps (1 us with hardware timestamping). Frames sent "
++                 "by this program are not seen unless the device echoes them."));
++    };
++    connect(modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, modeChanged);
++    modeChanged();
++
++    connect(CANConManager::getInstance(), &CANConManager::framesReceived, this, &ResponseMeterWindow::framesReceived);
++    sendTimer.setTimerType(Qt::PreciseTimer);
++    connect(&sendTimer, &QTimer::timeout, this, &ResponseMeterWindow::sendRequest);
++    connect(&checkTimer, &QTimer::timeout, this, &ResponseMeterWindow::tick);
++    checkTimer.start(20);
++    updateStats();
++}
++
++bool ResponseMeterWindow::parseId(const QLineEdit *e, quint32 &id, bool &ext) const
++{
++    bool ok;
++    QString t = e->text().trimmed();
++    if (t.startsWith("0x", Qt::CaseInsensitive))
++        t = t.mid(2);
++    id = t.toUInt(&ok, 16);
++    ext = id > 0x7FF || t.size() > 3;
++    return ok && id <= 0x1FFFFFFF;
++}
++
++qint64 ResponseMeterWindow::hostMicros() const
++{
++    return QDateTime::currentMSecsSinceEpoch() * 1000ll - qint64(CANConManager::getInstance()->getTimeBasis());
++}
++
++void ResponseMeterWindow::startStop()
++{
++    if (running)
++    {
++        running = false;
++        sendTimer.stop();
++        pending = false;
++        startBtn->setText(tr("Start"));
++        return;
++    }
++    if (!parseId(reqIdEdit, reqId, reqExt) || !parseId(respIdEdit, respId, respExt))
++    {
++        statsLabel->setText(tr("request and response IDs are hex numbers"));
++        return;
++    }
++    running = true;
++    pending = false;
++    sent = 0;
++    startBtn->setText(tr("Stop"));
++    if (modeCombo->currentIndex() == 1)
++    {
++        sendTimer.start(periodSpin->value());
++        sendRequest();
++    }
++}
++
++void ResponseMeterWindow::reset()
++{
++    delays.clear();
++    timeouts = 0;
++    sent = 0;
++    pending = false;
++    table->setRowCount(0);
++    updateStats();
++}
++
++void ResponseMeterWindow::sendRequest()
++{
++    if (!running)
++        return;
++    if (countSpin->value() && sent >= countSpin->value())
++    {
++        if (!pending)
++            startStop();
++        return;
++    }
++    if (pending)
++        return;                     /* still waiting; the timeout check handles it */
++    QByteArray data = QByteArray::fromHex(reqDataEdit->text().remove(' ').toLatin1()).left(8);
++    CANConManager::getInstance()->sendFrame(guiMakeFrame(busSpin->value(), reqId, reqExt, data));
++    pending = true;
++    pendingUs = hostMicros();
++    pendingSince.start();
++    sent++;
++}
++
++void ResponseMeterWindow::framesReceived(CANConnection *conn, QVector<GuiFrame> &frames)
++{
++    Q_UNUSED(conn);
++    if (!running)
++        return;
++    bool watch = modeCombo->currentIndex() == 0;
++    for (const GuiFrame &f : frames)
++    {
++        if (guiFrameBus(f) != busSpin->value() || f.frameType() != GUI_DATA_FRAME)
++            continue;
++        quint32 id = f.frameId();
++        bool ext = f.hasExtendedFrameFormat();
++        if (watch && id == reqId && ext == reqExt)
++        {
++            if (pending)
++                timeouts++;         /* new request before the previous one was answered */
++            pending = true;
++            pendingUs = guiFrameMicros(f);
++            pendingSince.start();
++        }
++        else if (id == respId && ext == respExt && pending)
++        {
++            pending = false;
++            addMeasurement(guiFrameMicros(f) - pendingUs);
++        }
++    }
++    updateStats();
++}
++
++void ResponseMeterWindow::tick()
++{
++    if (running && pending && pendingSince.elapsed() > timeoutSpin->value())
++    {
++        pending = false;
++        timeouts++;
++        updateStats();
++    }
++}
++
++void ResponseMeterWindow::addMeasurement(qint64 delayUs)
++{
++    delays.append(delayUs);
++    table->insertRow(0);
++    table->setItem(0, 0, new QTableWidgetItem(QString::number(delays.size())));
++    table->setItem(0, 1, new QTableWidgetItem(ms(delayUs)));
++    if (table->rowCount() > TABLE_ROWS)
++        table->setRowCount(TABLE_ROWS);
++}
++
++void ResponseMeterWindow::updateStats()
++{
++    if (delays.isEmpty())
++    {
++        statsLabel->setText(tr("responses: 0   timeouts: %1").arg(timeouts));
++        return;
++    }
++    qint64 mn = delays.first(), mx = delays.first();
++    double sum = 0;
++    for (qint64 d : delays)
++    {
++        mn = qMin(mn, d);
++        mx = qMax(mx, d);
++        sum += d;
++    }
++    double avg = sum / delays.size();
++    double var = 0;
++    for (qint64 d : delays)
++        var += (d - avg) * (d - avg);
++    double sd = delays.size() > 1 ? qSqrt(var / (delays.size() - 1)) : 0;
++    statsLabel->setText(tr("responses: %1   timeouts: %2\nlast %3   min %4   avg %5   max %6   std dev %7")
++                            .arg(delays.size()).arg(timeouts)
++                            .arg(ms(delays.last()), ms(mn), ms(qint64(avg)), ms(mx), ms(qint64(sd))));
++}
+diff --git a/re/responsemeterwindow.h b/re/responsemeterwindow.h
+new file mode 100755
+index 0000000..ec4045f
+--- /dev/null
++++ b/re/responsemeterwindow.h
+@@ -0,0 +1,78 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef RESPONSEMETERWINDOW_H
++#define RESPONSEMETERWINDOW_H
++
++/*
++ * Response meter: time from a request frame to the matching response
++ * frame, with statistics.
++ *
++ * Watch mode: both frames are seen on the bus (another node sends the
++ * request); the delay comes from the frame timestamps, so with a device
++ * that timestamps in hardware it is accurate to microseconds.
++ *
++ * Send mode: this window sends the request periodically. The request time
++ * is taken from the host clock and the response time from the frame
++ * timestamp, so the result carries the offset between the two clocks
++ * (typically a few milliseconds with USB adapters).
++ */
++
++#include <QWidget>
++#include <QVector>
++#include <QTimer>
++#include <QElapsedTimer>
++
++#include "savvycompat.h"
++
++class QSpinBox;
++class QLineEdit;
++class QComboBox;
++class QLabel;
++class QPushButton;
++class QTableWidget;
++class CANConnection;
++
++class ResponseMeterWindow : public QWidget
++{
++    Q_OBJECT
++
++public:
++    explicit ResponseMeterWindow(QWidget *parent = nullptr);
++
++public slots:
++    void framesReceived(CANConnection *conn, QVector<GuiFrame> &frames);
++
++private slots:
++    void startStop();
++    void reset();
++    void tick();
++    void sendRequest();
++
++private:
++    bool parseId(const QLineEdit *e, quint32 &id, bool &ext) const;
++    void addMeasurement(qint64 delayUs);
++    void updateStats();
++    qint64 hostMicros() const;
++
++    QSpinBox     *busSpin;
++    QLineEdit    *reqIdEdit, *respIdEdit, *reqDataEdit;
++    QComboBox    *modeCombo;
++    QSpinBox     *periodSpin, *countSpin, *timeoutSpin;
++    QPushButton  *startBtn;
++    QLabel       *statsLabel, *noteLabel;
++    QTableWidget *table;
++
++    QTimer        sendTimer;
++    QTimer        checkTimer;
++    QElapsedTimer pendingSince;
++    bool          running = false;
++    bool          pending = false;
++    qint64        pendingUs = 0;
++    quint32       reqId = 0, respId = 0;
++    bool          reqExt = false, respExt = false;
++    int           sent = 0;
++    int           timeouts = 0;
++    QVector<qint64> delays;
++};
++
++#endif // RESPONSEMETERWINDOW_H
+diff --git a/re/savvycompat.h b/re/savvycompat.h
+new file mode 100755
+index 0000000..7178fa5
+--- /dev/null
++++ b/re/savvycompat.h
+@@ -0,0 +1,66 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef SAVVYCOMPAT_H
++#define SAVVYCOMPAT_H
++
++/*
++ * Small helpers so a tool window compiles on SavvyCAN master (Qt 5,
++ * frames are CANFrame / QCanBusFrame) and on the QT6WIP branch (Qt 6,
++ * frames are CommFrame).
++ */
++
++#include <QtGlobal>
++#include "can_structs.h"
++
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++typedef CommFrame GuiFrame;
++#define GUI_DATA_FRAME CommFrame::CANDataFrame
++#else
++typedef CANFrame GuiFrame;
++#define GUI_DATA_FRAME QCanBusFrame::DataFrame
++#endif
++
++inline int guiFrameBus(const GuiFrame &f)
++{
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++    return f.getBus();
++#else
++    return f.bus;
++#endif
++}
++
++inline bool guiFrameReceived(const GuiFrame &f)
++{
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++    return f.isReceived();
++#else
++    return f.isReceived;
++#endif
++}
++
++/* Microseconds on SavvyCAN's frame timeline (seconds and microseconds of
++ * the frame timestamp combined; connections may fill either part). */
++inline qint64 guiFrameMicros(const GuiFrame &f)
++{
++    return qint64(f.timeStamp().seconds()) * 1000000 + qint64(f.timeStamp().microSeconds());
++}
++
++/* A data frame ready for CANConManager::sendFrame(). */
++inline GuiFrame guiMakeFrame(int bus, quint32 id, bool extended, const QByteArray &data)
++{
++    GuiFrame f;
++    f.setFrameType(GUI_DATA_FRAME);
++    f.setExtendedFrameFormat(extended);
++    f.setFrameId(id);
++    f.setPayload(data);
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++    f.setBus(bus);
++    f.setReceived(false);
++#else
++    f.bus = bus;
++    f.isReceived = false;
++#endif
++    return f;
++}
++
++#endif // SAVVYCOMPAT_H
 diff --git a/ui/newconnectiondialog.ui b/ui/newconnectiondialog.ui
 index e459583..8a79fa3 100644
 --- a/ui/newconnectiondialog.ui

@@ -34,11 +34,11 @@ or missing details, **no** = not available.
 | Predefined message database, up to 10 selections | Custom frame sender (Send Frames > Custom), save/load | yes | |
 | Sync (periodic 10 ms .. 10 s) | Custom frame sender intervals | yes | Host timed |
 | HW sync (adapter-timed periodic) | none | no | Needs the firmware's periodic-transmit command; not in the documented protocol |
-| File sender (replay a log) | Playback | yes | Speed control, loop, per-bus mapping |
+| File sender (replay a log) | Playback, now also with PP2CAN `.log` files | yes | Original timing, speed control, loop, bus mapping; File > Save Log as PP2CAN writes PP2CAN logs |
 | Multipacket sender | ISO-TP via scripting | partial | No generic multi-frame sender window |
-| Data sender (byte / 16-bit value with a slider) | none | no | Scripting can do it, no slider UI |
-| Bit sender | none | no | |
-| ASCII sender | none | no | ASCII column only on receive |
+| Data sender (byte / 16-bit value with a slider) | Data Panel (added) | yes | Slider per byte, 16-bit value in Intel or Motorola order |
+| Bit sender | Data Panel (added) | yes | Eight check boxes per byte |
+| ASCII sender | Data Panel (added) | yes | Fill the data bytes from text |
 | Signal sender | DBC + frame sender | partial | Signals are edited in the DBC editor, not with sliders |
 | Reply maker | Custom frame sender triggers, Scripting | partial | Triggers ("on ID x after n ms") and modifiers exist; JavaScript scripting covers data-dependent replies |
 | Gateway | CAN Bridge | yes | Between any two buses, also across adapters |
@@ -55,11 +55,11 @@ or missing details, **no** = not available.
 | Graph | Graphing windows, Temporal Graph | yes | |
 | ID trap (IDs and counts on the bus) | Frame Data Analysis, Overwrite Mode | yes | |
 | Timing accuracy (period per ID) | Frame Data Analysis | yes | Shows interval statistics per ID |
-| Response meter | none | no | Time from request ID to response ID |
+| Response meter | Response Meter (added) | yes | Watch mode from hardware timestamps, send mode with periodic requests |
 | Bus load graph with BusOff, TEC/REC, overflow counts | Bus Statistics window (added) | yes | Load % per bus with graph, frames/s, error frames, state and TEC/REC; overflow count still needs the firmware's status layout |
 | Table reader, Data view | Frame Info, Flow View | yes | |
 | Set / Get number | DBC signal editor | partial | |
-| CAN calculator (29-bit, 11+18, MCP2510, SJA1000 registers) | none | no | Small standalone utility |
+| CAN calculator (29-bit, 11+18, MCP2510, SJA1000 registers) | CAN Calculator (added) | yes | All directions |
 
 ## Protocols and system
 
@@ -84,13 +84,9 @@ Ranked by value for CANLAB users and by how much is unblocked today.
    CANopen with NMT, node monitor, EMCY, SYNC and an SDO client
    (`gui/savvycan/re/canopenwindow.*`). Next: PDO decoding from an EDS
    file, SDO block transfer, LSS.
-3. **Response meter.** Request ID, response ID, statistics of the delay.
-   Small window on top of the frame stream.
-4. **Data / bit / ASCII sender with sliders.** A "panel" window that
-   edits one frame's bytes, bits or a 16-bit value live with sliders and
-   checkboxes. Useful for bench testing, small.
-5. **CAN calculator.** ID conversions between 29-bit, 11+18 and the
-   MCP2510 / SJA1000 register layouts. Trivial utility.
+3. ~~Response meter~~, 4. ~~Data / bit / ASCII sender~~, 5. ~~CAN
+   calculator~~: done 2026-10-14, plus PP2CAN log files in Playback (the
+   file sender) and File > Save Log as PP2CAN.
 
 Blocked on the firmware source (see `doc/protocol.md`):
 

@@ -36,8 +36,12 @@ for f in ("triple_serial.h", "triple_serial.cpp"):
     shutil.copy(os.path.join(R, "gui", "savvycan", "connections", f), os.path.join(S, "connections", f))
 shutil.copy(os.path.join(R, "driver", "include", "triple_proto.h"), os.path.join(S, "connections", "triple_proto.h"))
 shutil.copy(os.path.join(R, "driver", "triple_proto.c"), os.path.join(S, "connections", "triple_proto.c"))
-for f in ("busstatswindow.h", "busstatswindow.cpp", "canopenwindow.h", "canopenwindow.cpp"):
+for f in ("busstatswindow.h", "busstatswindow.cpp", "canopenwindow.h", "canopenwindow.cpp",
+          "savvycompat.h", "canidcalc.h", "cancalcwindow.h", "cancalcwindow.cpp",
+          "responsemeterwindow.h", "responsemeterwindow.cpp", "datapanelwindow.h", "datapanelwindow.cpp"):
     shutil.copy(os.path.join(R, "gui", "savvycan", "re", f), os.path.join(S, "re", f))
+for f in ("pp2canlog.h", "pp2canlog.cpp", "pp2canlogfmt.h"):
+    shutil.copy(os.path.join(R, "gui", "savvycan", f), os.path.join(S, f))
 print("copied connection sources into", os.path.join(S, "connections"))
 
 BS = " \\\n"  # backslash-newline continuation in the .pro file
@@ -63,6 +67,17 @@ if os.path.exists(os.path.join(S, "CMakeLists.txt")):
           "    re/busstatswindow.cpp re/busstatswindow.h\n",
           "    re/busstatswindow.cpp re/busstatswindow.h\n"
           "    re/canopenwindow.cpp re/canopenwindow.h\n")
+    patch("CMakeLists.txt",
+          "    framefileio.cpp framefileio.h\n",
+          "    framefileio.cpp framefileio.h\n"
+          "    pp2canlog.cpp pp2canlog.h pp2canlogfmt.h\n")
+    patch("CMakeLists.txt",
+          "    re/canopenwindow.cpp re/canopenwindow.h\n",
+          "    re/canopenwindow.cpp re/canopenwindow.h\n"
+          "    re/savvycompat.h re/canidcalc.h\n"
+          "    re/cancalcwindow.cpp re/cancalcwindow.h\n"
+          "    re/responsemeterwindow.cpp re/responsemeterwindow.h\n"
+          "    re/datapanelwindow.cpp re/datapanelwindow.h\n")
 
 patch("SavvyCAN.pro",
       "    re/temporalgraphwindow.cpp" + BS,
@@ -76,6 +91,45 @@ patch("SavvyCAN.pro",
 patch("SavvyCAN.pro",
       "    re/busstatswindow.h" + BS,
       "    re/busstatswindow.h" + BS + "    re/canopenwindow.h" + BS)
+patch("SavvyCAN.pro",
+      "    re/canopenwindow.cpp" + BS,
+      "    re/canopenwindow.cpp" + BS + "    re/cancalcwindow.cpp" + BS + "    re/responsemeterwindow.cpp" + BS
+      + "    re/datapanelwindow.cpp" + BS)
+patch("SavvyCAN.pro",
+      "    re/canopenwindow.h" + BS,
+      "    re/canopenwindow.h" + BS + "    re/savvycompat.h" + BS + "    re/canidcalc.h" + BS + "    re/cancalcwindow.h" + BS
+      + "    re/responsemeterwindow.h" + BS + "    re/datapanelwindow.h" + BS)
+
+patch("SavvyCAN.pro",
+      "    framefileio.cpp" + BS,
+      "    framefileio.cpp" + BS + "    pp2canlog.cpp" + BS)
+patch("SavvyCAN.pro",
+      "    framefileio.h" + BS,
+      "    framefileio.h" + BS + "    pp2canlog.h" + BS + "    pp2canlogfmt.h" + BS)
+
+# PP2CAN logs in the Load Log File dialog and autodetection (and therefore
+# in Playback, the file sender). Filter and dispatch go after the last
+# entry, which differs between master and QT6WIP.
+FIO = "framefileio.cpp"
+patch(FIO, '#include "framefileio.h"\n', '#include "framefileio.h"\n#include "pp2canlog.h"\n')
+PP_FILTER = '    filters.append(QString(tr("PP2CAN Log (*.log *.LOG)")));\n'
+PP_DISPATCH = ('        if (selectedNameFilter == tr("PP2CAN Log (*.log *.LOG)")) '
+               'result = PP2CANLog::load(filename, frameCache);\n')
+fio = open(os.path.join(S, FIO), encoding="utf-8").read()
+if "CANWise Log (*.log)" in fio:                               # QT6WIP
+    patch(FIO, '    filters.append(QString(tr("CANWise Log (*.log)")));                     // 27\n',
+          '    filters.append(QString(tr("CANWise Log (*.log)")));                     // 27\n' + PP_FILTER)
+    patch(FIO, "        if (selectedNameFilter == filters[27]) result = loadCanWise(filename, frameCache);\n",
+          "        if (selectedNameFilter == filters[27]) result = loadCanWise(filename, frameCache);\n" + PP_DISPATCH)
+else:                                                          # master
+    patch(FIO, '    filters.append(QString(tr("Wireshark SocketCAN (*.pcap *.PCAP")));\n',
+          '    filters.append(QString(tr("Wireshark SocketCAN (*.pcap *.PCAP")));\n' + PP_FILTER)
+    patch(FIO, "        if (selectedNameFilter == filters[25]) result = loadWiresharkSocketCANFile(filename, frameCache);\n",
+          "        if (selectedNameFilter == filters[25]) result = loadWiresharkSocketCANFile(filename, frameCache);\n" + PP_DISPATCH)
+patch(FIO, '    qDebug() << "Attempting Canalyzer BLF";\n',
+      '    if (PP2CANLog::isFile(filename) && PP2CANLog::load(filename, frames))\n'
+      '        return true;\n\n'
+      '    qDebug() << "Attempting Canalyzer BLF";\n')
 
 # Bus Statistics window in the RE Tools menu
 patch("mainwindow.cpp",
@@ -106,6 +160,25 @@ patch("mainwindow.cpp",
       "        canopenWindow->activateWindow();\n"
       "    });\n"
       "    connect(ui->menu_RE_Tools->addAction(tr(\"Bus Statistics\")), &QAction::triggered, this, [this]() {\n")
+
+# Response Meter and CAN Calculator (RE Tools), Data Panel (Send Frames)
+patch("mainwindow.cpp",
+      '#include "re/canopenwindow.h"\n',
+      '#include "re/canopenwindow.h"\n#include "re/cancalcwindow.h"\n#include "re/responsemeterwindow.h"\n'
+      '#include "re/datapanelwindow.h"\n')
+TOOL = ("    connect(ui->{menu}->addAction(tr(\"{title}\")), &QAction::triggered, this, [this]() {{\n"
+        "        static QPointer<{cls}> w;\n"
+        "        if (!w) w = new {cls}(this);\n"
+        "        w->show();\n"
+        "        w->raise();\n"
+        "        w->activateWindow();\n"
+        "    }});\n")
+patch("mainwindow.cpp",
+      "    connect(ui->menu_RE_Tools->addAction(tr(\"CANopen\")), &QAction::triggered, this, [this]() {\n",
+      TOOL.format(menu="menuSend_Frames", title="Data Panel", cls="DataPanelWindow")
+      + TOOL.format(menu="menu_RE_Tools", title="Response Meter", cls="ResponseMeterWindow")
+      + TOOL.format(menu="menu_RE_Tools", title="CAN Calculator", cls="CanCalcWindow")
+      + "    connect(ui->menu_RE_Tools->addAction(tr(\"CANopen\")), &QAction::triggered, this, [this]() {\n")
 
 patch("connections/canconconst.h",
       "        CANLOGSERVER,\n        NONE\n",
@@ -198,5 +271,16 @@ else:
           "        if (conn_p->getType() == CANCon::type::SERIALBUS || conn_p->getType() == CANCon::type::LAWICEL)\n",
           "        if (conn_p->getType() == CANCon::type::SERIALBUS || conn_p->getType() == CANCon::type::LAWICEL ||\n"
           "            (conn_p->getType() == CANCon::type::TRIPLE && offset == 2))\n")
+
+# File > Save Log as PP2CAN... (after the Data Panel entry exists)
+patch("mainwindow.cpp",
+      '#include "re/datapanelwindow.h"\n',
+      '#include "re/datapanelwindow.h"\n#include "pp2canlog.h"\n')
+patch("mainwindow.cpp",
+      "    connect(ui->menuSend_Frames->addAction(tr(\"Data Panel\")), &QAction::triggered, this, [this]() {\n",
+      "    connect(ui->menuFile->addAction(tr(\"Save Log as PP2CAN...\")), &QAction::triggered, this, [this]() {\n"
+      "        PP2CANLog::saveWithDialog(this, model->getListReference());\n"
+      "    });\n"
+      "    connect(ui->menuSend_Frames->addAction(tr(\"Data Panel\")), &QAction::triggered, this, [this]() {\n")
 
 print("done: rebuild SavvyCAN (qmake && make)")

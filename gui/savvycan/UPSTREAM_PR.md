@@ -9,9 +9,11 @@ has two commits:
 | `5076eab` | Add a connection type for the CANLAB USB2CAN Triple |
 | `a85db3c` | Add a Bus Statistics window (generic, works with every connection) |
 | `7997283` | Add a CANopen window (generic: NMT, node monitor, EMCY, SYNC, SDO client) |
+| `ec64818` | Add PP2CAN log files, Data Panel, Response Meter and CAN Calculator |
 
-They can go in one PR or as separate ones; the two windows do not depend
-on the connection.
+They can go in one PR or as separate ones; only the first commit is
+specific to the Triple, the tool windows and the PP2CAN log format work
+with every connection.
 
 ## Before opening
 
