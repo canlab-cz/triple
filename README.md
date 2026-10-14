@@ -25,6 +25,20 @@ the protocol facts and the test record. Firmware 1.41.
 Verified builds: Ubuntu 22.04 (5.15), Ubuntu 24.04 (6.8), Fedora 44 (7.2),
 WSL2 (6.6). The container matrix is in `ci/kbuild/`.
 
+On Windows with WSL2, hand an adapter to Linux with
+[usbipd-win](https://github.com/dorssel/usbipd-win) (the module has to be
+built against the WSL2 kernel source):
+
+```sh
+usbipd list                          # Windows, admin: find the busid of 04d8:f0d7
+usbipd bind --busid 1-2              # once per adapter
+usbipd attach --wsl --busid 1-2      # appears in WSL2 as /dev/ttyACMx
+```
+
+An adapter handed back to Windows (`usbipd detach`) may stay unusable
+there, opening its COM port times out, until it is physically replugged;
+`pnputil /restart-device` does not help.
+
 ## Build and load
 
 ```sh

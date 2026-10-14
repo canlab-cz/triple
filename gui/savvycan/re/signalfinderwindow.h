@@ -7,8 +7,10 @@
  * RE Tools > Signal Finder: automatic analysis of the captured frames
  * (re/canre.h). Per ID: timing, a bit flip heatmap, and the fields it
  * found (rolling counters, checksums, constants, flags, signal candidates
- * with byte order); checked fields go into a DBC file. A second tab
- * compares two time windows ("what changed when I pressed the button").
+ * with byte order) with a plot of the selected one over time; checked
+ * fields go into a DBC file, which can be loaded into SavvyCAN right
+ * away. A second tab compares two time windows ("what changed when I
+ * pressed the button").
  */
 
 #include <QVector>
@@ -18,6 +20,7 @@
 #include "canre.h"
 #include "savvycompat.h"
 
+class QCustomPlot;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
@@ -34,6 +37,7 @@ public:
 private slots:
     void refresh();
     void idSelected();
+    void fieldSelected();
     void addToDbc();
     void saveDbc();
     void compare();
@@ -54,6 +58,7 @@ private:
     QTableWidget   *heatmap;
     QTableWidget   *fieldTable;
     QPlainTextEdit *dbcView;
+    QCustomPlot    *plot;
     QDoubleSpinBox *aStart, *aEnd, *bStart, *bEnd;
     QPlainTextEdit *diffView;
 };

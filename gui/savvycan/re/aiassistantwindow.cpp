@@ -34,6 +34,7 @@
 #include <functional>
 
 #include "connections/canconmanager.h"
+#include "dbcload.h"
 #include "recapture.h"
 
 namespace {
@@ -709,16 +710,6 @@ void AiAssistantWindow::saveDbc()
         QMessageBox::information(this, tr("AI Assistant"), tr("No DBC proposal yet."));
         return;
     }
-    QSettings settings;
-    QString path = QFileDialog::getSaveFileName(this, tr("Save DBC"), settings.value("SignalFinder/dbcPath").toString(), tr("DBC (*.dbc)"));
-    if (path.isEmpty()) return;
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-    {
-        QMessageBox::warning(this, tr("AI Assistant"), tr("Cannot write %1").arg(path));
-        return;
-    }
-    f.write(QByteArray::fromStdString(canre::toDbc(proposals)));
-    settings.setValue("SignalFinder/dbcPath", path);
-    statusLabel->setText(tr("saved %1; load it with File > DBC File Manager").arg(path));
+    QString status = saveAndLoadDbc(this, QByteArray::fromStdString(canre::toDbc(proposals)));
+    if (!status.isEmpty()) statusLabel->setText(status);
 }

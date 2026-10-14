@@ -40,7 +40,7 @@ for f in ("busstatswindow.h", "busstatswindow.cpp", "canopenwindow.h", "canopenw
           "savvycompat.h", "canidcalc.h", "canopen_eds.h", "cancalcwindow.h", "cancalcwindow.cpp",
           "responsemeterwindow.h", "responsemeterwindow.cpp", "datapanelwindow.h", "datapanelwindow.cpp",
           "canre.h", "aitools.h", "recapture.h", "signalfinderwindow.h", "signalfinderwindow.cpp",
-          "aiassistantwindow.h", "aiassistantwindow.cpp"):
+          "aiassistantwindow.h", "aiassistantwindow.cpp", "dbcload.h"):
     shutil.copy(os.path.join(R, "gui", "savvycan", "re", f), os.path.join(S, "re", f))
 for f in ("pp2canlog.h", "pp2canlog.cpp", "pp2canlogfmt.h", "logprinter.h", "logprinter.cpp", "logprintlayout.h"):
     shutil.copy(os.path.join(R, "gui", "savvycan", f), os.path.join(S, f))
@@ -94,6 +94,10 @@ if os.path.exists(os.path.join(S, "CMakeLists.txt")):
           "    re/canre.h re/aitools.h re/recapture.h\n"
           "    re/signalfinderwindow.cpp re/signalfinderwindow.h\n"
           "    re/aiassistantwindow.cpp re/aiassistantwindow.h\n")
+    patch("CMakeLists.txt",
+          "    re/aiassistantwindow.cpp re/aiassistantwindow.h\n",
+          "    re/aiassistantwindow.cpp re/aiassistantwindow.h\n"
+          "    re/dbcload.h\n")
 
 patch("SavvyCAN.pro",
       "    re/temporalgraphwindow.cpp" + BS,
@@ -123,6 +127,9 @@ patch("SavvyCAN.pro",
       "    re/canopen_eds.h" + BS,
       "    re/canopen_eds.h" + BS + "    re/canre.h" + BS + "    re/aitools.h" + BS + "    re/recapture.h" + BS
       + "    re/signalfinderwindow.h" + BS + "    re/aiassistantwindow.h" + BS)
+patch("SavvyCAN.pro",
+      "    re/aiassistantwindow.h" + BS,
+      "    re/aiassistantwindow.h" + BS + "    re/dbcload.h" + BS)
 
 patch("SavvyCAN.pro",
       "    framefileio.cpp" + BS,

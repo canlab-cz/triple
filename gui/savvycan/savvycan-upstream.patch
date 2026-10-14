@@ -1,5 +1,5 @@
 diff --git a/SavvyCAN.pro b/SavvyCAN.pro
-index d7197dc..dbd167a 100644
+index d7197dc..35c4c53 100644
 --- a/SavvyCAN.pro
 +++ b/SavvyCAN.pro
 @@ -28,6 +28,8 @@ SOURCES += main.cpp\
@@ -54,7 +54,7 @@ index d7197dc..dbd167a 100644
      config.h \
      mainsettingsdialog.h \
      scriptingwindow.h \
-@@ -198,6 +215,19 @@ HEADERS  += mainwindow.h \
+@@ -198,6 +215,20 @@ HEADERS  += mainwindow.h \
      re/sniffer/SnifferDelegate.h \
      connections/newconnectiondialog.h \
      re/temporalgraphwindow.h \
@@ -71,6 +71,7 @@ index d7197dc..dbd167a 100644
 +    re/recapture.h \
 +    re/signalfinderwindow.h \
 +    re/aiassistantwindow.h \
++    re/dbcload.h \
      re/udsfirmwareuploaderwindow.h \
      filterutility.h \
      pcaplite.h
@@ -2628,10 +2629,10 @@ index 0000000..3fc52c7
 +#endif // PP2CANLOGFMT_H
 diff --git a/re/aiassistantwindow.cpp b/re/aiassistantwindow.cpp
 new file mode 100755
-index 0000000..60b7e67
+index 0000000..cf687ab
 --- /dev/null
 +++ b/re/aiassistantwindow.cpp
-@@ -0,0 +1,724 @@
+@@ -0,0 +1,715 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#include "aiassistantwindow.h"
@@ -2668,6 +2669,7 @@ index 0000000..60b7e67
 +#include <functional>
 +
 +#include "connections/canconmanager.h"
++#include "dbcload.h"
 +#include "recapture.h"
 +
 +namespace {
@@ -3343,18 +3345,8 @@ index 0000000..60b7e67
 +        QMessageBox::information(this, tr("AI Assistant"), tr("No DBC proposal yet."));
 +        return;
 +    }
-+    QSettings settings;
-+    QString path = QFileDialog::getSaveFileName(this, tr("Save DBC"), settings.value("SignalFinder/dbcPath").toString(), tr("DBC (*.dbc)"));
-+    if (path.isEmpty()) return;
-+    QFile f(path);
-+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-+    {
-+        QMessageBox::warning(this, tr("AI Assistant"), tr("Cannot write %1").arg(path));
-+        return;
-+    }
-+    f.write(QByteArray::fromStdString(canre::toDbc(proposals)));
-+    settings.setValue("SignalFinder/dbcPath", path);
-+    statusLabel->setText(tr("saved %1; load it with File > DBC File Manager").arg(path));
++    QString status = saveAndLoadDbc(this, QByteArray::fromStdString(canre::toDbc(proposals)));
++    if (!status.isEmpty()) statusLabel->setText(status);
 +}
 diff --git a/re/aiassistantwindow.h b/re/aiassistantwindow.h
 new file mode 100755
@@ -7115,6 +7107,67 @@ index 0000000..e38882d
 +};
 +
 +#endif // DATAPANELWINDOW_H
+diff --git a/re/dbcload.h b/re/dbcload.h
+new file mode 100755
+index 0000000..313df66
+--- /dev/null
++++ b/re/dbcload.h
+@@ -0,0 +1,55 @@
++// SPDX-License-Identifier: MIT
++// Copyright (c) 2026 CANLAB s.r.o.
++#ifndef DBCLOAD_H
++#define DBCLOAD_H
++
++/* Saves DBC text and, if the user wants, loads it into SavvyCAN's DBC
++ * handler so the frame list decodes the signals (Interpret Frames). A file
++ * loaded earlier from the same path is replaced, not loaded twice. */
++
++#include <QFile>
++#include <QFileDialog>
++#include <QFileInfo>
++#include <QMessageBox>
++#include <QSettings>
++#include <QWidget>
++
++#include "dbc/dbchandler.h"
++
++/* Returns a status line for the window, empty if the user cancelled. */
++inline QString saveAndLoadDbc(QWidget *parent, const QByteArray &dbcText)
++{
++    QSettings settings;
++    QString path = QFileDialog::getSaveFileName(parent, QObject::tr("Save DBC"), settings.value("SignalFinder/dbcPath").toString(),
++                                                QObject::tr("DBC (*.dbc)"));
++    if (path.isEmpty())
++        return QString();
++    QFile f(path);
++    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
++    {
++        QMessageBox::warning(parent, QObject::tr("Save DBC"), QObject::tr("Cannot write %1").arg(path));
++        return QObject::tr("could not write %1").arg(path);
++    }
++    f.write(dbcText);
++    f.close();
++    settings.setValue("SignalFinder/dbcPath", path);
++
++    if (QMessageBox::question(parent, QObject::tr("Save DBC"),
++                              QObject::tr("Load it into SavvyCAN now, so the frame list decodes the signals (Interpret Frames)?"),
++                              QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
++        return QObject::tr("saved %1").arg(path);
++
++    DBCHandler *h = DBCHandler::getReference();
++    QString target = QFileInfo(path).absoluteFilePath();
++    for (int i = h->getFileCount() - 1; i >= 0; i--)
++    {
++        DBCFile *old = h->getFileByIdx(i);
++        if (old && QFileInfo(old->getFullFilename()).absoluteFilePath() == target)
++            h->removeDBCFile(i);
++    }
++    if (!h->loadDBCFile(path))
++        return QObject::tr("saved %1, but SavvyCAN could not load it").arg(path);
++    return QObject::tr("saved and loaded %1; tick Interpret Frames in the main window to see the signals").arg(path);
++}
++
++#endif // DBCLOAD_H
 diff --git a/re/recapture.h b/re/recapture.h
 new file mode 100755
 index 0000000..6f95b3c
@@ -7567,10 +7620,10 @@ index 0000000..7178fa5
 +#endif // SAVVYCOMPAT_H
 diff --git a/re/signalfinderwindow.cpp b/re/signalfinderwindow.cpp
 new file mode 100755
-index 0000000..e59c3da
+index 0000000..1b647a4
 --- /dev/null
 +++ b/re/signalfinderwindow.cpp
-@@ -0,0 +1,330 @@
+@@ -0,0 +1,357 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#include "signalfinderwindow.h"
@@ -7593,6 +7646,8 @@ index 0000000..e59c3da
 +#include <QVBoxLayout>
 +#include <cmath>
 +
++#include "dbcload.h"
++#include "qcustomplot.h"
 +#include "recapture.h"
 +
 +namespace {
@@ -7668,6 +7723,13 @@ index 0000000..e59c3da
 +    fl->setContentsMargins(0, 0, 0, 0);
 +    fl->addWidget(new QLabel(tr("Detected fields (Intel start = LSB, Motorola start = MSB, DBC numbering):"), this));
 +    fl->addWidget(fieldTable, 3);
++    plot = new QCustomPlot(this);
++    plot->setMinimumHeight(160);
++    plot->xAxis->setLabel(tr("time (s)"));
++    plot->yAxis->setLabel(tr("raw value"));
++    plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
++    plot->addGraph();
++    fl->addWidget(plot, 2);
 +    fl->addLayout(dbcRow);
 +    fl->addWidget(dbcView, 2);
 +
@@ -7722,6 +7784,7 @@ index 0000000..e59c3da
 +
 +    connect(refreshBtn, &QPushButton::clicked, this, &SignalFinderWindow::refresh);
 +    connect(idTable, &QTableWidget::itemSelectionChanged, this, &SignalFinderWindow::idSelected);
++    connect(fieldTable, &QTableWidget::itemSelectionChanged, this, &SignalFinderWindow::fieldSelected);
 +    connect(addBtn, &QPushButton::clicked, this, &SignalFinderWindow::addToDbc);
 +    connect(saveBtn, &QPushButton::clicked, this, &SignalFinderWindow::saveDbc);
 +    connect(cmpBtn, &QPushButton::clicked, this, &SignalFinderWindow::compare);
@@ -7834,6 +7897,33 @@ index 0000000..e59c3da
 +    summary->setText(tr("%1: %2 frames of %3 bytes analyzed").arg(keyStr(current.key)).arg(current.frames).arg(current.length));
 +}
 +
++void SignalFinderWindow::fieldSelected()
++{
++    QList<QTableWidgetItem *> sel = fieldTable->selectedItems();
++    int r = sel.isEmpty() ? fieldTable->currentRow() : sel.first()->row();
++    if (r < 0 || r >= int(current.fields.size()))
++        return;
++    const canre::Field &f = current.fields[size_t(r)];
++    double t0, t1;
++    timeRange(t0, t1);
++    QVector<double> x, y;
++    for (size_t i : cap.indices(current.key, t0, t1))
++    {
++        bool ok;
++        uint64_t v = canre::extractBits(cap.data(i), cap.frame(i).len, f.startBit, f.length, f.bigEndian, &ok);
++        if (!ok) continue;
++        x.append(cap.seconds(i));
++        y.append(double(v));
++    }
++    plot->graph(0)->setData(x, y);
++    plot->graph(0)->setLineStyle(f.length == 1 ? QCPGraph::lsStepLeft : QCPGraph::lsLine);
++    plot->rescaleAxes();
++    plot->yAxis->scaleRange(1.1, plot->yAxis->range().center());
++    plot->yAxis->setLabel(tr("%1, start %2, %3 bits%4").arg(canre::kindName(f.kind)).arg(f.startBit).arg(f.length)
++                              .arg(f.bigEndian ? tr(", Motorola") : QString()));
++    plot->replot();
++}
++
 +void SignalFinderWindow::addToDbc()
 +{
 +    if (current.frames == 0) return;
@@ -7875,18 +7965,8 @@ index 0000000..e59c3da
 +        QMessageBox::information(this, tr("Signal Finder"), tr("Add fields to the DBC first."));
 +        return;
 +    }
-+    QSettings settings;
-+    QString path = QFileDialog::getSaveFileName(this, tr("Save DBC"), settings.value("SignalFinder/dbcPath").toString(), tr("DBC (*.dbc)"));
-+    if (path.isEmpty()) return;
-+    QFile f(path);
-+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-+    {
-+        QMessageBox::warning(this, tr("Signal Finder"), tr("Cannot write %1").arg(path));
-+        return;
-+    }
-+    f.write(QByteArray::fromStdString(canre::toDbc(dbc)));
-+    settings.setValue("SignalFinder/dbcPath", path);
-+    summary->setText(tr("saved %1; load it with File > DBC File Manager").arg(path));
++    QString status = saveAndLoadDbc(this, QByteArray::fromStdString(canre::toDbc(dbc)));
++    if (!status.isEmpty()) summary->setText(status);
 +}
 +
 +void SignalFinderWindow::compare()
@@ -7903,10 +7983,10 @@ index 0000000..e59c3da
 +}
 diff --git a/re/signalfinderwindow.h b/re/signalfinderwindow.h
 new file mode 100755
-index 0000000..41503ed
+index 0000000..6ec41e7
 --- /dev/null
 +++ b/re/signalfinderwindow.h
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,66 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#ifndef SIGNALFINDERWINDOW_H
@@ -7916,8 +7996,10 @@ index 0000000..41503ed
 + * RE Tools > Signal Finder: automatic analysis of the captured frames
 + * (re/canre.h). Per ID: timing, a bit flip heatmap, and the fields it
 + * found (rolling counters, checksums, constants, flags, signal candidates
-+ * with byte order); checked fields go into a DBC file. A second tab
-+ * compares two time windows ("what changed when I pressed the button").
++ * with byte order) with a plot of the selected one over time; checked
++ * fields go into a DBC file, which can be loaded into SavvyCAN right
++ * away. A second tab compares two time windows ("what changed when I
++ * pressed the button").
 + */
 +
 +#include <QVector>
@@ -7927,6 +8009,7 @@ index 0000000..41503ed
 +#include "canre.h"
 +#include "savvycompat.h"
 +
++class QCustomPlot;
 +class QDoubleSpinBox;
 +class QLabel;
 +class QLineEdit;
@@ -7943,6 +8026,7 @@ index 0000000..41503ed
 +private slots:
 +    void refresh();
 +    void idSelected();
++    void fieldSelected();
 +    void addToDbc();
 +    void saveDbc();
 +    void compare();
@@ -7963,6 +8047,7 @@ index 0000000..41503ed
 +    QTableWidget   *heatmap;
 +    QTableWidget   *fieldTable;
 +    QPlainTextEdit *dbcView;
++    QCustomPlot    *plot;
 +    QDoubleSpinBox *aStart, *aEnd, *bStart, *bEnd;
 +    QPlainTextEdit *diffView;
 +};

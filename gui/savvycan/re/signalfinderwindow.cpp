@@ -20,6 +20,8 @@
 #include <QVBoxLayout>
 #include <cmath>
 
+#include "dbcload.h"
+#include "qcustomplot.h"
 #include "recapture.h"
 
 namespace {
@@ -95,6 +97,13 @@ SignalFinderWindow::SignalFinderWindow(const QVector<GuiFrame> *frameList, QWidg
     fl->setContentsMargins(0, 0, 0, 0);
     fl->addWidget(new QLabel(tr("Detected fields (Intel start = LSB, Motorola start = MSB, DBC numbering):"), this));
     fl->addWidget(fieldTable, 3);
+    plot = new QCustomPlot(this);
+    plot->setMinimumHeight(160);
+    plot->xAxis->setLabel(tr("time (s)"));
+    plot->yAxis->setLabel(tr("raw value"));
+    plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+    plot->addGraph();
+    fl->addWidget(plot, 2);
     fl->addLayout(dbcRow);
     fl->addWidget(dbcView, 2);
 
@@ -149,6 +158,7 @@ SignalFinderWindow::SignalFinderWindow(const QVector<GuiFrame> *frameList, QWidg
 
     connect(refreshBtn, &QPushButton::clicked, this, &SignalFinderWindow::refresh);
     connect(idTable, &QTableWidget::itemSelectionChanged, this, &SignalFinderWindow::idSelected);
+    connect(fieldTable, &QTableWidget::itemSelectionChanged, this, &SignalFinderWindow::fieldSelected);
     connect(addBtn, &QPushButton::clicked, this, &SignalFinderWindow::addToDbc);
     connect(saveBtn, &QPushButton::clicked, this, &SignalFinderWindow::saveDbc);
     connect(cmpBtn, &QPushButton::clicked, this, &SignalFinderWindow::compare);
@@ -261,6 +271,33 @@ void SignalFinderWindow::idSelected()
     summary->setText(tr("%1: %2 frames of %3 bytes analyzed").arg(keyStr(current.key)).arg(current.frames).arg(current.length));
 }
 
+void SignalFinderWindow::fieldSelected()
+{
+    QList<QTableWidgetItem *> sel = fieldTable->selectedItems();
+    int r = sel.isEmpty() ? fieldTable->currentRow() : sel.first()->row();
+    if (r < 0 || r >= int(current.fields.size()))
+        return;
+    const canre::Field &f = current.fields[size_t(r)];
+    double t0, t1;
+    timeRange(t0, t1);
+    QVector<double> x, y;
+    for (size_t i : cap.indices(current.key, t0, t1))
+    {
+        bool ok;
+        uint64_t v = canre::extractBits(cap.data(i), cap.frame(i).len, f.startBit, f.length, f.bigEndian, &ok);
+        if (!ok) continue;
+        x.append(cap.seconds(i));
+        y.append(double(v));
+    }
+    plot->graph(0)->setData(x, y);
+    plot->graph(0)->setLineStyle(f.length == 1 ? QCPGraph::lsStepLeft : QCPGraph::lsLine);
+    plot->rescaleAxes();
+    plot->yAxis->scaleRange(1.1, plot->yAxis->range().center());
+    plot->yAxis->setLabel(tr("%1, start %2, %3 bits%4").arg(canre::kindName(f.kind)).arg(f.startBit).arg(f.length)
+                              .arg(f.bigEndian ? tr(", Motorola") : QString()));
+    plot->replot();
+}
+
 void SignalFinderWindow::addToDbc()
 {
     if (current.frames == 0) return;
@@ -302,18 +339,8 @@ void SignalFinderWindow::saveDbc()
         QMessageBox::information(this, tr("Signal Finder"), tr("Add fields to the DBC first."));
         return;
     }
-    QSettings settings;
-    QString path = QFileDialog::getSaveFileName(this, tr("Save DBC"), settings.value("SignalFinder/dbcPath").toString(), tr("DBC (*.dbc)"));
-    if (path.isEmpty()) return;
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-    {
-        QMessageBox::warning(this, tr("Signal Finder"), tr("Cannot write %1").arg(path));
-        return;
-    }
-    f.write(QByteArray::fromStdString(canre::toDbc(dbc)));
-    settings.setValue("SignalFinder/dbcPath", path);
-    summary->setText(tr("saved %1; load it with File > DBC File Manager").arg(path));
+    QString status = saveAndLoadDbc(this, QByteArray::fromStdString(canre::toDbc(dbc)));
+    if (!status.isEmpty()) summary->setText(status);
 }
 
 void SignalFinderWindow::compare()

@@ -71,7 +71,9 @@ To try it without a CANopen device, run the simulated node from
   constant), constant bytes, flags, and signal candidates. Signals are
   segmented by bit flip rates (inside a signal the flip rate rises from MSB
   to LSB) in both byte orders, and the byte order that gives the longer
-  field wins. Checked fields go into a DBC file. The second tab compares
+  field wins. The selected field is plotted over time. Checked fields go
+  into a DBC file, and saving offers to load it into SavvyCAN right away so
+  Interpret Frames decodes them in the frame list. The second tab compares
   two time windows ("what changed when I pressed the button"): IDs that
   appear or vanish, rate changes, and the bits whose level or toggling
   differs most.
@@ -79,7 +81,7 @@ To try it without a CANopen device, run the simulated node from
   Anthropic API key. It works on the capture with the same analysis as
   tools: overview, ID list, per-ID analysis, raw frames, decoded signal
   values over time, window comparison. It proposes DBC signals in a side
-  panel that you save yourself. Transmitting frames is off by default; when
+  panel that you save (and load into SavvyCAN) yourself. Transmitting frames is off by default; when
   you allow it, every frame needs your confirmation and can be limited to
   an ID allowlist.
 
