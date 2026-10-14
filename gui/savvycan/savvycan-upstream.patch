@@ -3515,10 +3515,10 @@ index 0000000..5c550a6
 +#endif // AIASSISTANTWINDOW_H
 diff --git a/re/aitools.h b/re/aitools.h
 new file mode 100755
-index 0000000..4efe83b
+index 0000000..654d821
 --- /dev/null
 +++ b/re/aitools.h
-@@ -0,0 +1,352 @@
+@@ -0,0 +1,360 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#ifndef AITOOLS_H
@@ -3660,7 +3660,7 @@ index 0000000..4efe83b
 +{"name":"list_ids","description":"One line per CAN ID: bus, count, mean period and jitter in ms, lengths, number of bytes that change, distinct payloads. IDs are hex.","input_schema":{"type":"object","properties":{"bus":{"type":"integer","description":"only this bus"},"sort":{"type":"string","enum":["id","count","changing"]},"limit":{"type":"integer","description":"max lines, default 100"}}}},
 +{"name":"analyze_id","description":"Statistics of one ID: per byte min/max/distinct/changes/entropy, bit flip rate per bit, and detected fields: rolling counters, checksums (XOR, SUM, CRC-8 J1850/AUTOSAR), constants, flags, a multiplexer (a field whose value selects the layout of the other bytes), and signal candidates segmented by bit flip rates with byte order. Start bits follow DBC: Intel = LSB position, Motorola = MSB position, position = byte*8 + bit. For a multiplexed ID, call again with mux_start/mux_length/mux_value to analyze one page.","input_schema":{"type":"object","properties":{"id":{"type":"string","description":"hex, e.g. \"1A3\" or \"18FEF100\""},"bus":{"type":"integer"},"start_s":{"type":"number"},"end_s":{"type":"number"},"mux_start":{"type":"integer","description":"multiplexer start bit (Intel), from a previous analyze_id"},"mux_length":{"type":"integer"},"mux_value":{"type":"integer","description":"only frames with this multiplexer value"}},"required":["id"]}},
 +{"name":"get_frames","description":"Raw frames of one ID: time in s and data bytes in hex. Prefer analyze_id and signal_values; use this to look at a few concrete frames.","input_schema":{"type":"object","properties":{"id":{"type":"string"},"bus":{"type":"integer"},"start_s":{"type":"number"},"end_s":{"type":"number"},"limit":{"type":"integer"}},"required":["id"]}},
-+{"name":"signal_values","description":"Decode a bit field of one ID over time: statistics and an evenly downsampled list of (time s, value). Value = raw * factor + offset.","input_schema":{"type":"object","properties":{"id":{"type":"string"},"bus":{"type":"integer"},"start_bit":{"type":"integer"},"length":{"type":"integer"},"byte_order":{"type":"string","enum":["intel","motorola"]},"signed":{"type":"boolean"},"factor":{"type":"number"},"offset":{"type":"number"},"start_s":{"type":"number"},"end_s":{"type":"number"},"max_points":{"type":"integer"}},"required":["id","start_bit","length","byte_order"]}},
++{"name":"signal_values","description":"Decode a bit field of one ID over time: statistics and an evenly downsampled list of (time s, value). Value = raw * factor + offset. For a signal on one page of a multiplexed ID give mux_start/mux_length/mux_value, otherwise the other pages are decoded too.","input_schema":{"type":"object","properties":{"id":{"type":"string"},"bus":{"type":"integer"},"start_bit":{"type":"integer"},"length":{"type":"integer"},"byte_order":{"type":"string","enum":["intel","motorola"]},"signed":{"type":"boolean"},"factor":{"type":"number"},"offset":{"type":"number"},"start_s":{"type":"number"},"end_s":{"type":"number"},"max_points":{"type":"integer"},"mux_start":{"type":"integer","description":"multiplexed ID: only frames whose multiplexer (Intel bit field at mux_start, mux_length bits) has mux_value"},"mux_length":{"type":"integer"},"mux_value":{"type":"integer"}},"required":["id","start_bit","length","byte_order"]}},
 +{"name":"compare_windows","description":"What differs between time window A and B: IDs present in only one, changed frame rates, and the bits whose level or toggling differs most (a switch or state shows as a steady bit at a different level).","input_schema":{"type":"object","properties":{"a_start":{"type":"number"},"a_end":{"type":"number"},"b_start":{"type":"number"},"b_end":{"type":"number"},"max_bits":{"type":"integer"}},"required":["a_start","a_end","b_start","b_end"]}},
 +{"name":"changes_around","description":"compare_windows for the seconds before and after a moment, e.g. when the user pressed a button.","input_schema":{"type":"object","properties":{"time_s":{"type":"number"},"before_s":{"type":"number"},"after_s":{"type":"number"}},"required":["time_s"]}},
 +{"name":"propose_dbc","description":"Offer decoded messages and signals to the user as a DBC proposal. Nothing is applied automatically; the user reviews and saves it. Use DBC start bit conventions as in analyze_id.","input_schema":{"type":"object","properties":{"messages":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"length":{"type":"integer"},"signals":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"start_bit":{"type":"integer"},"length":{"type":"integer"},"byte_order":{"type":"string","enum":["intel","motorola"]},"signed":{"type":"boolean"},"factor":{"type":"number"},"offset":{"type":"number"},"min":{"type":"number"},"max":{"type":"number"},"unit":{"type":"string"},"comment":{"type":"string"},"multiplexer":{"type":"boolean","description":"this signal is the message's multiplexer"},"mux_value":{"type":"integer","description":"signal exists only when the multiplexer has this value"}},"required":["name","start_bit","length","byte_order"]}}},"required":["id","name","signals"]}}},"required":["messages"]}})";
@@ -3680,7 +3680,8 @@ index 0000000..4efe83b
 +           "bit positions follow DBC (position = byte*8 + bit, Intel start = LSB, Motorola start = MSB). Start broad "
 +           "(capture_overview, list_ids), then analyze_id on interesting IDs, signal_values to check a hypothesis, "
 +           "compare_windows / changes_around when the user tells you when they did something. When an ID has a "
-+           "multiplexer, analyze each of its values separately and propose its signals with mux_value. Tool results are "
++           "multiplexer, analyze each of its values separately, decode its signals with the same mux parameters in "
++           "signal_values, and propose them with mux_value. Tool results are "
 +           "limited in size; ask for narrower ranges rather than everything. Say how sure you are; a hypothesis is "
 +           "not a fact until a signal behaves as expected. Offer findings with propose_dbc when they are solid. "
 +           "Transmitting frames can affect real equipment: only propose it when needed and explain why.";
@@ -3812,11 +3813,18 @@ index 0000000..4efe83b
 +        bool motorola = a.s("byte_order", "intel") == "motorola", sgn = a.b("signed", false);
 +        double factor = a.n("factor", 1), offset = a.n("offset", 0);
 +        if (len < 1 || len > 64) return { "length must be 1..64", true };
++        int muxStart = int(a.n("mux_start", -1)), muxLen = int(a.n("mux_length", 0));
++        int64_t muxValue = int64_t(a.n("mux_value", -1));
++        bool muxed = a.has("mux_value");
++        if (muxed && (muxStart < 0 || muxLen < 1 || muxLen > 32))
++            return { "mux_value needs mux_start and mux_length (1..32) from analyze_id", true };
 +        std::vector<size_t> idx = cap.indices(k, t0, t1);
 +        std::vector<std::pair<double, double>> pts;
 +        for (size_t i : idx)
 +        {
 +            bool ok;
++            if (muxed && (int64_t(canre::extractBits(cap.data(i), cap.frame(i).len, muxStart, muxLen, false, &ok)) != muxValue || !ok))
++                continue;
 +            uint64_t raw = canre::extractBits(cap.data(i), cap.frame(i).len, start, len, motorola, &ok);
 +            if (!ok) continue;
 +            double v;
@@ -7020,10 +7028,10 @@ index 0000000..985ccb2
 +#endif // CANOPENWINDOW_H
 diff --git a/re/canre.h b/re/canre.h
 new file mode 100755
-index 0000000..c2da0ac
+index 0000000..c7c2062
 --- /dev/null
 +++ b/re/canre.h
-@@ -0,0 +1,868 @@
+@@ -0,0 +1,1006 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#ifndef CANRE_H
@@ -7218,7 +7226,7 @@ index 0000000..c2da0ac
 +    int         startBit = 0;     /* DBC start bit (Intel: LSB, Motorola: MSB) */
 +    int         length = 1;
 +    bool        bigEndian = false;
-+    bool        isSigned = false;
++    bool        isSigned = false; /* two's complement; minRaw/maxRaw then hold sign-extended values */
 +    uint64_t    minRaw = 0, maxRaw = 0;
 +    int         unique = 0;
 +    std::string note;             /* e.g. "+1 per frame, wraps at 15", "XOR of bytes 0..6" */
@@ -7267,6 +7275,13 @@ index 0000000..c2da0ac
 +        else pos--;
 +    }
 +    return v;
++}
++
++/* Two's complement value of a raw field of len bits. */
++inline int64_t signExtend(uint64_t raw, int len)
++{
++    if (len <= 0 || len >= 64 || !(raw & (uint64_t(1) << (len - 1)))) return int64_t(raw);
++    return int64_t(raw) - int64_t(uint64_t(1) << len);
 +}
 +
 +/* Motorola start bit (MSB) of a field whose LSB is at lsbPos and that is
@@ -7534,8 +7549,44 @@ index 0000000..c2da0ac
 +            }
 +            return true;
 +        };
-+        double bestRatio = 0.5;
-+        int bestLsb = -1, bestLen = 0;
++        /* Ratio of the change rates "same value" / "consecutive" over the
++         * changing bytes, without the bits in ignore[byte]. */
++        auto ratioFor = [&](const std::vector<uint64_t> &v, const std::vector<uint8_t> &ignore, double &ratio) {
++            double sumU = 0, sumC = 0;
++            int used_ = 0;
++            for (int o = 0; o < L; o++)
++            {
++                const uint8_t mask = uint8_t(~ignore[size_t(o)]);
++                if (checksumBytes.count(o) || !mask) continue;
++                int cu = 0;
++                for (int i = 1; i < n; i++) if ((s.d[size_t(i)][o] ^ s.d[size_t(i - 1)][o]) & mask) cu++;
++                double ru = double(cu) / (n - 1);
++                if (ru < 0.2) continue;                   /* byte barely changes anyway */
++                std::map<uint64_t, int> last;
++                int pairs = 0, cc = 0;
++                for (int i = 0; i < n; i++)
++                {
++                    auto it = last.find(v[size_t(i)]);
++                    if (it != last.end())
++                    {
++                        pairs++;
++                        if ((s.d[size_t(i)][o] ^ s.d[size_t(it->second)][o]) & mask) cc++;
++                    }
++                    last[v[size_t(i)]] = i;
++                }
++                if (!pairs) continue;
++                sumU += ru;
++                sumC += double(cc) / pairs;
++                used_++;
++            }
++            ratio = used_ ? sumC / sumU : 1;
++            return used_ > 0;
++        };
++        struct MuxCand { int lsb, len; double ratio; std::vector<uint64_t> v; size_t distinct; };
++        auto ignoreOf = [&](const MuxCand &c, std::vector<uint8_t> &ignore) {
++            ignore[size_t(c.lsb / 8)] |= uint8_t(((1u << c.len) - 1) << (c.lsb % 8));
++        };
++        std::vector<MuxCand> cands;
 +        for (int b = 0; b < L; b++)
 +        {
 +            const int cand[][2] = { { 0, 8 }, { 0, 4 }, { 4, 4 } };
@@ -7543,50 +7594,79 @@ index 0000000..c2da0ac
 +            {
 +                int lsb = b * 8 + cd[0], len = cd[1];
 +                if (!candidateFree(lsb, len)) continue;
-+                std::vector<uint64_t> v(size_t(n), 0);
++                MuxCand mc{ lsb, len, 1, std::vector<uint64_t>(size_t(n), 0), 0 };
 +                std::set<uint64_t> distinct;
 +                int changes = 0;
 +                for (int i = 0; i < n; i++)
 +                {
-+                    v[size_t(i)] = extractBits(s.d[size_t(i)], L, lsb, len, false);
-+                    distinct.insert(v[size_t(i)]);
-+                    if (i && v[size_t(i)] != v[size_t(i - 1)]) changes++;
++                    mc.v[size_t(i)] = extractBits(s.d[size_t(i)], L, lsb, len, false);
++                    distinct.insert(mc.v[size_t(i)]);
++                    if (i && mc.v[size_t(i)] != mc.v[size_t(i - 1)]) changes++;
 +                }
 +                if (distinct.size() < 2 || distinct.size() > 32 || changes < 0.3 * (n - 1)) continue;
-+                double sumU = 0, sumC = 0;
-+                int used_ = 0;
-+                for (int o = 0; o < L; o++)
-+                {
-+                    if (o == b || checksumBytes.count(o)) continue;
-+                    int cu = 0;
-+                    for (int i = 1; i < n; i++) if (s.d[size_t(i)][o] != s.d[size_t(i - 1)][o]) cu++;
-+                    double ru = double(cu) / (n - 1);
-+                    if (ru < 0.2) continue;                   /* byte barely changes anyway */
-+                    std::map<uint64_t, int> last;
-+                    int pairs = 0, cc = 0;
-+                    for (int i = 0; i < n; i++)
-+                    {
-+                        auto it = last.find(v[size_t(i)]);
-+                        if (it != last.end())
-+                        {
-+                            pairs++;
-+                            if (s.d[size_t(i)][o] != s.d[size_t(it->second)][o]) cc++;
-+                        }
-+                        last[v[size_t(i)]] = i;
-+                    }
-+                    if (!pairs) continue;
-+                    sumU += ru;
-+                    sumC += double(cc) / pairs;
-+                    used_++;
-+                }
-+                if (!used_) continue;
-+                double ratio = sumC / sumU;
-+                if (ratio < bestRatio - 1e-9)
-+                {
-+                    bestRatio = ratio; bestLsb = lsb; bestLen = len;
-+                }
++                mc.distinct = distinct.size();
++                /* the candidate's own byte counts with its other bits: a
++                 * nibble next to a noisy one must not hide the noise */
++                std::vector<uint8_t> ignore(size_t(L), 0);
++                ignoreOf(mc, ignore);
++                if (ratioFor(mc.v, ignore, mc.ratio) && mc.ratio < 0.5)
++                    cands.push_back(mc);
 +            }
 +        }
++        /* The lowest ratio wins, except that a field that only refines a
++         * coarser candidate (each of its values goes with one value of the
++         * other in 95 % of frames) is page content, e.g. a byte that differs
++         * per page: the selector is the coarsest field that explains the
++         * layout about as well. Each candidate leaves its own bits out of
++         * its ratio, which flatters a noisy one, so the two are compared on
++         * the bytes outside both. A coarser field that merges real pages
++         * explains the layout clearly worse there and is not taken. */
++        std::sort(cands.begin(), cands.end(), [](const MuxCand &x, const MuxCand &y) { return x.ratio < y.ratio; });
++        auto refines = [&](const MuxCand &fine, const MuxCand &coarse) {
++            std::map<uint64_t, std::map<uint64_t, int>> joint;
++            for (int i = 0; i < n; i++) joint[fine.v[size_t(i)]][coarse.v[size_t(i)]]++;
++            int agree = 0;
++            for (const auto &j : joint)
++            {
++                int most = 0;
++                for (const auto &c : j.second) most = std::max(most, c.second);
++                agree += most;
++            }
++            return agree >= int(0.95 * n);
++        };
++        auto asGood = [&](const MuxCand &fine, const MuxCand &coarse) {
++            std::vector<uint8_t> ignore(size_t(L), 0);
++            ignoreOf(fine, ignore);
++            ignoreOf(coarse, ignore);
++            double rf, rc;
++            if (!ratioFor(fine.v, ignore, rf) || !ratioFor(coarse.v, ignore, rc)) return false;
++            return rc <= rf * 1.25 + 0.01;
++        };
++        /* between fields that split the frames the same way, values 0, 1, ...
++         * and an earlier position make the selector */
++        auto tieKey = [&](const MuxCand &c) {
++            uint64_t mx = 0;
++            for (uint64_t x : c.v) mx = std::max(mx, x);
++            return std::make_pair(mx + 1 == c.distinct ? 0 : 1, c.lsb);
++        };
++        auto coarser = [&](const MuxCand &c, const MuxCand &p) {
++            if (c.distinct < p.distinct) return refines(p, c);
++            return c.distinct == p.distinct && tieKey(c) < tieKey(p) && refines(p, c) && refines(c, p);
++        };
++        size_t pick = 0;
++        for (bool moved = !cands.empty(); moved;)
++        {
++            moved = false;
++            for (size_t c = 0; c < cands.size(); c++)
++                if (coarser(cands[c], cands[pick]) && asGood(cands[pick], cands[c]))
++                {
++                    pick = c;
++                    moved = true;
++                    break;
++                }
++        }
++        double bestRatio = cands.empty() ? 0 : cands[pick].ratio;
++        int bestLsb = cands.empty() ? -1 : cands[pick].lsb, bestLen = cands.empty() ? 0 : cands[pick].len;
 +        if (bestLsb >= 0)
 +        {
 +            std::set<uint64_t> distinct;
@@ -7645,13 +7725,43 @@ index 0000000..c2da0ac
 +        if (!cur.empty()) segs.push_back(cur);
 +        return segs;
 +    };
-+    struct Seg { std::vector<int> bits; bool intel; };
++    /* Byte order evidence: in a real multi-byte value the part above the
++     * low byte steps up when the low byte wraps down, and the other way
++     * round. Two unrelated bytes joined into one field (a noisy low byte
++     * next to another signal) agree on that only about half the time;
++     * such a field only goes in when nothing coherent covers its bits. */
++    auto coherent = [&](const std::vector<int> &bits, bool intel) {
++        int len = int(bits.size());
++        if (len <= 8) return true;
++        int start = intel ? bits.back() : bits.front();
++        int steps = 0, opposite = 0;
++        uint64_t prev = 0;
++        for (int i = 0; i < n; i++)
++        {
++            uint64_t v = extractBits(s.d[size_t(i)], L, start, len, !intel);
++            if (i)
++            {
++                int64_t dhi = int64_t(v >> 8) - int64_t(prev >> 8), dlo = int64_t(v & 0xFF) - int64_t(prev & 0xFF);
++                if (dhi && dlo)
++                {
++                    steps++;
++                    if ((dhi > 0) != (dlo > 0)) opposite++;
++                }
++            }
++            prev = v;
++        }
++        return steps < 8 || opposite * 4 >= steps * 3;
++    };
++    struct Seg { std::vector<int> bits; bool intel; bool coherent; };
 +    std::vector<Seg> multi;
 +    for (int o = 0; o < 2; o++)
 +        for (const std::vector<int> &sg : segment(o == 1))
 +            if (sg.front() / 8 != sg.back() / 8)
-+                multi.push_back({ sg, o == 1 });
-+    std::sort(multi.begin(), multi.end(), [](const Seg &x, const Seg &y) { return x.bits.size() > y.bits.size(); });
++                multi.push_back({ sg, o == 1, coherent(sg, o == 1) });
++    std::stable_sort(multi.begin(), multi.end(), [](const Seg &x, const Seg &y) {
++        if (x.coherent != y.coherent) return x.coherent;
++        return x.bits.size() > y.bits.size();
++    });
 +
 +    auto addField = [&](const std::vector<int> &bits, bool intel) {
 +        Field f;
@@ -7672,6 +7782,24 @@ index 0000000..c2da0ac
 +        f.minRaw = mn; f.maxRaw = mx; f.unique = int(distinct.size());
 +        f.kind = f.length == 1 ? FieldKind::Flag : FieldKind::Signal;
 +        if (multiByte) f.note = intel ? "Intel byte order (low byte first)" : "Motorola byte order (high byte first)";
++        /* signed: values on both sides of the sign bit that lie close
++         * together in two's complement (e.g. -99 .. 54) but far apart
++         * unsigned (54 .. 65437) */
++        if (f.length >= 4 && f.length < 64 && (mx >> (f.length - 1)) && !(mn >> (f.length - 1)))
++        {
++            int64_t smn = INT64_MAX, smx = INT64_MIN;
++            for (uint64_t v : distinct)
++            {
++                int64_t sv = signExtend(v, f.length);
++                smn = std::min(smn, sv); smx = std::max(smx, sv);
++            }
++            if (double(smx - smn) * 4 < double(mx - mn))
++            {
++                f.isSigned = true;
++                f.minRaw = uint64_t(smn); f.maxRaw = uint64_t(smx);
++                f.note += std::string(f.note.empty() ? "" : ", ") + "signed";
++            }
++        }
 +        a.fields.push_back(f);
 +        for (int p : bits) used[size_t(p)] = true;
 +    };
@@ -7730,9 +7858,13 @@ index 0000000..c2da0ac
 +    out += "fields (DBC start bit; Intel = LSB, Motorola = MSB):\n";
 +    for (const Field &f : a.fields)
 +    {
-+        snprintf(line, sizeof(line), "  %-8s start %2d len %2d %s raw %llu..%llu, %d values%s%s\n", kindName(f.kind), f.startBit,
-+                 f.length, f.bigEndian ? "Motorola" : "Intel   ", static_cast<unsigned long long>(f.minRaw),
-+                 static_cast<unsigned long long>(f.maxRaw), f.unique, f.note.empty() ? "" : ", ", f.note.c_str());
++        char range[64];
++        if (f.isSigned)
++            snprintf(range, sizeof(range), "%lld..%lld", static_cast<long long>(f.minRaw), static_cast<long long>(f.maxRaw));
++        else
++            snprintf(range, sizeof(range), "%llu..%llu", static_cast<unsigned long long>(f.minRaw), static_cast<unsigned long long>(f.maxRaw));
++        snprintf(line, sizeof(line), "  %-8s start %2d len %2d %s raw %s, %d values%s%s\n", kindName(f.kind), f.startBit,
++                 f.length, f.bigEndian ? "Motorola" : "Intel   ", range, f.unique, f.note.empty() ? "" : ", ", f.note.c_str());
 +        out += line;
 +    }
 +    return out;
@@ -7788,6 +7920,17 @@ index 0000000..c2da0ac
 +        if (std::max(ra, rb) > 1 && std::fabs(ra - rb) > 0.3 * std::max(ra, rb))
 +            w.rateChanged.push_back({ kv.first, { ra, rb } });
 +        size_t bitsN = std::min(kv.second.ones.size(), it->second.ones.size());
++        /* at rest in one window (not a single flip) and toggling in the
++         * other: a blinking lamp, a repeating button. When a value stops
++         * changing (the car stops), several bits of a byte do that together;
++         * a lamp is alone in its byte. */
++        std::vector<bool> restToggle(bitsN);
++        std::vector<int> perByte(bitsN / 8 + 1, 0);
++        for (size_t p = 0; p < bitsN; p++)
++        {
++            restToggle[p] = (kv.second.flips[p] == 0) != (it->second.flips[p] == 0);
++            if (restToggle[p]) perByte[p / 8]++;
++        }
 +        for (size_t p = 0; p < bitsN; p++)
 +        {
 +            BitChange bc;
@@ -7801,6 +7944,9 @@ index 0000000..c2da0ac
 +            double level = std::fabs(bc.oneA - bc.oneB);
 +            double steady = 1 - std::min(1.0, (bc.flipA + bc.flipB) * 5);
 +            bc.score = level * (0.5 + 0.5 * steady) + 0.25 * std::fabs(bc.flipA - bc.flipB);
++            /* a lamp-like bit ranks just below a steady level change */
++            if (restToggle[p] && perByte[p / 8] == 1)
++                bc.score = std::max(bc.score, 0.55 + 0.4 * std::min(1.0, (kv.second.flips[p] == 0 ? bc.flipB : bc.flipA) * 5));
 +            if (bc.score >= 0.2) w.bits.push_back(bc);
 +        }
 +    }
@@ -8702,10 +8848,10 @@ index 0000000..7178fa5
 +#endif // SAVVYCOMPAT_H
 diff --git a/re/signalfinderwindow.cpp b/re/signalfinderwindow.cpp
 new file mode 100755
-index 0000000..33fefea
+index 0000000..00a1d31
 --- /dev/null
 +++ b/re/signalfinderwindow.cpp
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,428 @@
 +// SPDX-License-Identifier: MIT
 +// Copyright (c) 2026 CANLAB s.r.o.
 +#include "signalfinderwindow.h"
@@ -8763,6 +8909,8 @@ index 0000000..33fefea
 +    pageCombo = new QComboBox(this);
 +    pageCombo->setToolTip(tr("For a multiplexed ID: analyze only the frames with one multiplexer value"));
 +    pageCombo->addItem(tr("all frames"));
++    pageCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
++    pageCombo->setMinimumContentsLength(16);
 +    pageCombo->setEnabled(false);
 +    QHBoxLayout *top = new QHBoxLayout;
 +    top->addWidget(new QLabel(tr("Time range (s, empty = all):"), this));
@@ -9015,7 +9163,8 @@ index 0000000..33fefea
 +        fieldTable->setItem(r, 3, ro(QString::number(f.startBit)));
 +        fieldTable->setItem(r, 4, ro(QString::number(f.length)));
 +        fieldTable->setItem(r, 5, ro(f.length == 1 || (f.startBit / 8 == (f.startBit + f.length - 1) / 8 && !f.bigEndian) ? "-" : f.bigEndian ? "Motorola" : "Intel"));
-+        fieldTable->setItem(r, 6, ro(QString("%1 .. %2").arg(qulonglong(f.minRaw)).arg(qulonglong(f.maxRaw))));
++        fieldTable->setItem(r, 6, ro(f.isSigned ? QString("%1 .. %2").arg(qlonglong(f.minRaw)).arg(qlonglong(f.maxRaw))
++                                                : QString("%1 .. %2").arg(qulonglong(f.minRaw)).arg(qulonglong(f.maxRaw))));
 +        fieldTable->setItem(r, 7, ro(QString::number(f.unique)));
 +        fieldTable->setItem(r, 8, ro(QString::fromStdString(f.note)));
 +    }
@@ -9037,10 +9186,14 @@ index 0000000..33fefea
 +    for (size_t i : cap.indices(current.key, t0, t1))
 +    {
 +        bool ok;
++        /* one page of a multiplexed ID: only its frames */
++        if (current.muxFilter >= 0 &&
++            (int64_t(canre::extractBits(cap.data(i), cap.frame(i).len, current.muxStart, current.muxLength, false, &ok)) != current.muxFilter || !ok))
++            continue;
 +        uint64_t v = canre::extractBits(cap.data(i), cap.frame(i).len, f.startBit, f.length, f.bigEndian, &ok);
 +        if (!ok) continue;
 +        x.append(cap.seconds(i));
-+        y.append(double(v));
++        y.append(f.isSigned ? double(canre::signExtend(v, f.length)) : double(v));
 +    }
 +    plot->graph(0)->setData(x, y);
 +    plot->graph(0)->setLineStyle(f.length == 1 ? QCPGraph::lsStepLeft : QCPGraph::lsLine);
@@ -9075,8 +9228,9 @@ index 0000000..33fefea
 +        s.startBit = f.startBit;
 +        s.length = f.length;
 +        s.bigEndian = f.bigEndian;
-+        s.minV = double(f.minRaw);
-+        s.maxV = double(f.maxRaw);
++        s.isSigned = f.isSigned;
++        s.minV = f.isSigned ? double(int64_t(f.minRaw)) : double(f.minRaw);
++        s.maxV = f.isSigned ? double(int64_t(f.maxRaw)) : double(f.maxRaw);
 +        s.comment = std::string(canre::kindName(f.kind)) + (f.note.empty() ? "" : ": " + f.note);
 +        if (f.kind == canre::FieldKind::Multiplexer) s.muxRole = 1;
 +        else if (current.muxFilter >= 0)

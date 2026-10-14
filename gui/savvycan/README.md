@@ -7,117 +7,30 @@ connection type for the CANLAB USB2CAN Triple, talking to the adapter over
 its serial port with the shared protocol codec, on Linux, Windows and
 macOS, without the kernel module.
 
-What the connection provides:
+How to use it is in the user guides:
 
-* three buses per adapter (CAN1, CAN2 classic, CAN3 CAN FD), bitrates,
-  listen-only, FD data rate and non-ISO set from SavvyCAN's connection
-  window (Bus Details tabs 0, 1, 2);
-* receive with the adapter's 1 us hardware timestamps, transmit on all
-  three buses, CAN FD with BRS on bus 2;
-* adapter error counters and error state in the device console, and an
-  error frame in the frame list on every bus state change (warning,
-  passive, bus off, back to active) with TEC/REC in bytes 6 and 7;
-* the adapter's 100-byte message limit enforced on transmit;
-* frames the adapter lost (transmit buffer full, receive path
-  overloaded; status bytes 18 .. 23) as controller error frames with the
-  RX / TX overflow flag. The connection itself does not pace its sending,
-  so very fast periodic sending into a slow bus shows up there;
-* a Bus Statistics window (RE Tools menu): load % per bus with a graph,
-  frames/s, error frames, overflows, bus state with TEC/REC. It works
-  with every SavvyCAN connection, not only the Triple.
+* [SavvyCAN with the Triple](../../doc/savvycan-guide.md): connection,
+  capture, sending, Bus Statistics, CANopen, Data Panel, Response Meter,
+  CAN Calculator, PP2CAN logs, printing;
+* [Reverse engineering](../../doc/reverse-engineering.md): Signal Finder
+  and the AI Assistant.
 
-![Bus Statistics window](../../doc/img/savvycan-bus-statistics.png)
+This page covers how the changes are applied to SavvyCAN and built.
 
-* a CANopen window (RE Tools menu): node list from heartbeat, boot-up and
-  EMCY messages, NMT commands, SYNC, and an SDO client that reads and
-  writes any object (expedited and segmented) and shows abort codes in
-  plain text; "Read identity" reads 1000, 1008, 1009, 100A and 1018.
-  The PDOs tab decodes PDOs live: load the node's EDS or DCF file, or
-  read the mapping from the node over SDO, and every mapped object shows
-  its value (by EDS data type), raw bits, frame count and period. Also
-  independent of the Triple connection.
+What is added:
 
-![CANopen window](../../doc/img/savvycan-canopen.png)
+| Where | What | Files |
+|---|---|---|
+| Connection | "CANLAB USB2CAN Triple (serial)": three buses, CAN FD on bus 2, hardware timestamps, bus state and overflow error frames | `connections/triple_serial.*`, `connections/triple_proto.*` (the codec from `driver/`) |
+| RE Tools | Bus Statistics, CANopen, Response Meter, CAN Calculator, Signal Finder, AI Assistant | `re/*` |
+| Send Frames | Data Panel | `re/datapanelwindow.*` |
+| File | Load / save PP2CAN logs, Print Log | `pp2canlog*`, `logprint*` |
 
-![CANopen PDOs tab](../../doc/img/savvycan-canopen-pdo.png)
+The logic of the tool windows (analysis, AI tools and limits, CANopen
+EDS parsing and block transfer, PP2CAN format, print layout, ID
+conversions) is in Qt-free headers, unit tested in `tests/gui`.
 
-  The SDO client also does block transfers (tick "Block transfer"; it
-  falls back to normal SDO if the node does not support them), writes
-  files to objects and saves what it read. The LSS tab finds nodes without
-  a node-ID (fastscan), sets node-ID and bit rate and stores them.
-
-![CANopen LSS: fastscan, node-ID set, node boots](../../doc/img/savvycan-canopen-lss.png)
-
-* PP2CAN tools:
-  * **PP2CAN log files**: File > Load Log File (autodetected) and the
-    Playback window read PP2CAN `.log` captures, so Playback works as
-    PP2CAN's file sender; File > Save Log as PP2CAN writes the current
-    capture in PP2CAN format. Note that PP2CAN writes time fields without
-    zero padding ("45.4" is 45 s and 4 ms).
-  * **Data Panel** (Send Frames): sliders, hex values and bit check boxes
-    per byte, a 16-bit value in Intel or Motorola order, fill from ASCII;
-    sends on change and/or periodically.
-  * **Response Meter** (RE Tools): delay between a request and a response
-    ID, from hardware timestamps (watch mode) or with periodic requests.
-  * **CAN Calculator** (RE Tools): identifier as 29-bit, 11+18 and
-    MCP2510/2515 or SJA1000 register values, editable in every field.
-  * **Print Log** (File): prints the frame list as shown (visible
-    columns, current filters) or only the selected frames, with a print
-    preview; long CAN FD data wraps instead of being cut off.
-
-![Playback replaying a PP2CAN log](../../doc/img/savvycan-file-sender.png)
-
-![Print preview of a log with CAN FD frames](../../doc/img/savvycan-print-log.png)
-
-To try it without a CANopen device, run the simulated node from
-`tools/canopen_sim.py` on a Linux SocketCAN interface on the same bus:
-`python3 tools/canopen_sim.py can0 --node 5`. Its EDS is
-`tools/canopen_sim.eds`; press Start (NMT) to make it send PDOs.
-`--node 255 --serial 1234567` starts a second node without node-ID for
-LSS, `--no-block` a node without block transfer.
-
-## Reverse engineering
-
-* **Signal Finder** (RE Tools) analyzes the captured frames per ID: period
-  and jitter, a bit flip heatmap, and the fields it finds: rolling
-  counters, checksums (XOR, SUM, CRC-8 SAE J1850 and AUTOSAR, with a
-  constant), constant bytes, flags, multiplexers, and signal candidates.
-  A multiplexer is a byte or nibble whose value selects the layout of the
-  other bytes; the Page list then analyzes one value at a time, and fields
-  added from a page are written as multiplexed DBC signals (M / m<n>).
-  Signals are
-  segmented by bit flip rates (inside a signal the flip rate rises from MSB
-  to LSB) in both byte orders, and the byte order that gives the longer
-  field wins. The selected field is plotted over time. Checked fields go
-  into a DBC file, and saving offers to load it into SavvyCAN right away so
-  Interpret Frames decodes them in the frame list. The second tab compares
-  two time windows ("what changed when I pressed the button"): IDs that
-  appear or vanish, rate changes, and the bits whose level or toggling
-  differs most.
-* **AI Assistant** (RE Tools) is a chat with Claude through your own
-  Anthropic API key. It works on the capture with the same analysis as
-  tools: overview, ID list, per-ID analysis, raw frames, decoded signal
-  values over time, window comparison. It proposes DBC signals in a side
-  panel that you save (and load into SavvyCAN) yourself. Transmitting frames is off by default; when
-  you allow it, every frame needs your confirmation and can be limited to
-  an ID allowlist.
-
-  Everything the assistant spends is bounded by "API key and limits":
-  tokens per reply, tool calls per question, frames and characters per tool
-  result, a session and a daily token budget, and requests per minute. The
-  budgets are checked before each request and the reply size is capped to
-  what is left; usage is counted from the API's own token figures and the
-  daily count survives restarts. With prices per million tokens filled in,
-  the window also shows an estimated cost. The key is kept for the session
-  only unless you tick "Remember" (then it is stored unencrypted in
-  SavvyCAN's settings); without one, `ANTHROPIC_API_KEY` from the
-  environment is used. Your questions and the tool results, which contain
-  capture data, are sent to the configured endpoint.
-
-![Signal Finder on traffic captured from the bus](../../doc/img/savvycan-signal-finder.png)
-
-The analysis is in `re/canre.h` and the assistant's tools and limits in
-`re/aitools.h`, both without Qt and unit tested (`tests/gui`).
+![SavvyCAN with a USB2CAN Triple](../../doc/img/savvycan-triple.png)
 
 ## Apply to an upstream checkout
 

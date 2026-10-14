@@ -1,202 +1,148 @@
-# USB2CAN Triple on Linux (SocketCAN)
+# USB2CAN Triple: SocketCAN driver, CAN analyzer and reverse engineering tools
 
-SocketCAN driver for the CANLAB **USB2CAN Triple** adapter: three CAN
-connectors on one USB port, CAN1 and CAN2 classic CAN, CAN3 CAN FD.
-Hardware: https://www.canlab.cz
+Software for the CANLAB **USB2CAN Triple** adapter: three CAN connectors
+on one USB port, CAN1 and CAN2 classic CAN, CAN3 CAN FD
+([canlab.cz](https://www.canlab.cz)).
 
-The adapter enumerates as a CDC ACM serial port (`/dev/ttyACMx`, USB
-`04d8:f0d7`). The kernel module `usb2cansocketcan` is a tty line
-discipline that turns that port into three CAN network devices. Everything
-else is standard SocketCAN: `ip link`, `candump`, `cansend`, python-can,
-Wireshark, ...
+* **Linux driver**: the adapter as three SocketCAN interfaces
+  (`can0` .. `can2`) on kernels 5.15 to 7.x, with hardware timestamps,
+  CAN FD, any bit timing on CAN3, bus state reporting and transmit flow
+  control.
+* **CAN analyzer**: [SavvyCAN](https://github.com/collin80/SavvyCAN) with
+  a native Triple connection for Windows and Linux, plus PP2CAN-style
+  tools: Bus Statistics, CANopen (SDO, PDOs from EDS, block transfer,
+  LSS), Data Panel, Response Meter, CAN Calculator, PP2CAN log files,
+  Print Log.
+* **Reverse engineering**: Signal Finder finds counters, checksums,
+  signals and multiplexers and writes DBC files; the AI Assistant
+  answers questions about a capture through Claude, with limits you set
+  on tokens, requests and bus access.
 
-Driver v2.0 (October 2026) is a rewrite on the kernel's CAN device API.
-It is verified on two adapters wired back to back; see `doc/PLAN.md` for
-the protocol facts and the test record. Firmware 1.41.
+![Signal Finder decoding a simulated engine message](doc/img/re-signal-finder-engine.png)
 
-## Requirements
+## Quick start
 
-* Linux 5.15 or newer with CAN support (`can`, `can-raw`, `can-dev`,
-  `cdc-acm`: built into most distribution kernels).
-* Kernel headers for building: `linux-headers-$(uname -r)` (Debian/Ubuntu),
-  `kernel-devel` (Fedora).
-* `ldattach` (util-linux) and `can-utils`.
-
-Verified builds: Ubuntu 22.04 (5.15), Ubuntu 24.04 (6.8), Fedora 44 (7.2),
-WSL2 (6.6). The container matrix is in `ci/kbuild/`.
-
-On Windows with WSL2, hand an adapter to Linux with
-[usbipd-win](https://github.com/dorssel/usbipd-win) (the module has to be
-built against the WSL2 kernel source):
+### Linux: SocketCAN
 
 ```sh
-usbipd list                          # Windows, admin: find the busid of 04d8:f0d7
-usbipd bind --busid 1-2              # once per adapter
-usbipd attach --wsl --busid 1-2      # appears in WSL2 as /dev/ttyACMx
+git clone https://github.com/canlab-cz/triple && cd triple
+make -C driver
+sudo insmod driver/usb2cansocketcan.ko
+sudo sh scripts/triple-attach.sh ttyACM0    # can0 250k, can1 500k, can2 FD 125k/6.7M
+candump -H any
 ```
 
-An adapter handed back to Windows (`usbipd detach`) may stay unusable
-there, opening its COM port times out, until it is physically replugged;
-`pnputil /restart-device` does not help.
+Details, bitrates, CAN FD timing, udev rules, WSL2:
+[doc/linux-driver.md](doc/linux-driver.md).
 
-## Build and load
+### Windows or Linux: SavvyCAN
 
 ```sh
-git clone https://github.com/canlab-cz/triple
-cd triple/driver
-make
-sudo insmod usb2cansocketcan.ko
+git clone --branch QT6WIP https://github.com/collin80/SavvyCAN   # Windows, Qt 6
+git clone https://github.com/collin80/SavvyCAN                   # Linux, Qt 5
+python3 gui/savvycan/apply.py SavvyCAN
 ```
 
-To install permanently with DKMS:
+Build it ([gui/savvycan/README.md](gui/savvycan/README.md#build)), then
+Connection > Open Connection Window > Add New Device Connection >
+"CANLAB USB2CAN Triple (serial)". No driver is needed on Windows. User
+guide: [doc/savvycan-guide.md](doc/savvycan-guide.md).
+
+### Reverse engineering, without hardware
 
 ```sh
-sudo cp -r driver /usr/src/usb2cansocketcan-2.0
-sudo dkms add -m usb2cansocketcan -v 2.0
-sudo dkms build -m usb2cansocketcan -v 2.0
-sudo dkms install -m usb2cansocketcan -v 2.0
+python3 tools/re_demo.py demo.log          # a minute of simulated car traffic
+make -C tools/canre
+tools/canre/canre_cli demo.log analyze_id id=0C9
 ```
 
-## Use
-
-Attach the line discipline (29) to the adapter's serial port, then
-configure the three interfaces like any other SocketCAN device:
-
-```sh
-sudo ldattach 29 /dev/ttyACM0
-ip -br link show type can          # can0 can1 can2 appear
-sudo ip link set can0 type can bitrate 250000
-sudo ip link set can1 type can bitrate 500000
-sudo ip link set can2 type can bitrate 125000 dbitrate 6700000 fd on
-sudo ip link set can0 up
-sudo ip link set can1 up
-sudo ip link set can2 up
-candump -H any                     # -H shows the adapter's hardware timestamps
+```text
+  signal   start  5 len 14 Motorola raw 3140..13039, 2548 values, Motorola byte order (high byte first)
+  signal   start 16 len  8 Intel    raw 0..162, 93 values
+  signal   start 24 len  8 Intel    raw 65..130, 66 values
+  constant start 32 len  8 Intel    raw 0..0, 1 values
+  constant start 40 len  8 Intel    raw 60..60, 1 values
+  counter  start 48 len  4 Intel    raw 0..15, 16 values, +1 per frame in 100 % of frames, 4 bits
+  checksum start 56 len  8 Intel    raw 0..255, 256 values, CRC-8 SAE J1850 of the other bytes
 ```
 
-`scripts/triple-attach.sh ttyACM0` does all of the above with these
-defaults; `scripts/triple-detach.sh` undoes it. To detach a single adapter,
-kill its `ldattach` process; unplugging the adapter works too.
+RPM, throttle, coolant temperature, two constants, a rolling counter and
+the checksum. Load `demo.log` in SavvyCAN and open RE Tools > Signal
+Finder or AI Assistant. Walkthrough with AI Assistant examples:
+[doc/reverse-engineering.md](doc/reverse-engineering.md).
 
-Supported settings:
+## Screenshots
 
-| Port | `bitrate` | `dbitrate` (`fd on`) | Other |
-|---|---|---|---|
-| CAN1, CAN2 | 10k 20k 33333 50k 62500 83333 100k 125k 250k 500k 1M | - | `listen-only on` |
-| CAN3 | 125k 250k 500k 1M | 250k 500k 833333 1M 1.5M 2M 3M 4M 5M 6.7M 8M 10M, higher than `bitrate` | `listen-only on`, `fd on`, `fd-non-iso on` |
+| | |
+|---|---|
+| ![SavvyCAN with a USB2CAN Triple on Windows](doc/img/savvycan-triple-windows.png) | ![Connection window with CAN FD settings](doc/img/savvycan-connection-window.png) |
+| SavvyCAN receiving from the Triple | Connection window: per-bus settings and device console |
+| ![Multiplexed message, one page decoded, signed current plotted](doc/img/re-signal-finder-mux.png) | ![Comparing the seconds before and after a door opened](doc/img/re-compare-door.png) |
+| Signal Finder: a multiplexed message, page 0 | What changed when the door opened |
+| ![AI Assistant](doc/img/ai-assistant.png) | ![AI Assistant limits](doc/img/ai-assistant-limits.png) |
+| AI Assistant on a capture | API key and limits |
+| ![Bus Statistics](doc/img/savvycan-bus-statistics.png) | ![CANopen PDOs decoded from the EDS](doc/img/savvycan-canopen-pdo.png) |
+| Bus Statistics: load, errors, overflows, TEC/REC | CANopen: PDOs decoded live from the EDS |
+| ![CANopen LSS](doc/img/savvycan-canopen-lss.png) | ![Data Panel](doc/img/savvycan-data-panel.png) |
+| CANopen LSS: fastscan and node-ID | Data Panel: sliders and bits per byte |
+| ![Print preview](doc/img/savvycan-print-log.png) | ![Playback of a PP2CAN log](doc/img/savvycan-file-sender.png) |
+| Print Log with preview | Playback of a PP2CAN log |
 
-CAN3 always runs as CAN FD in the firmware. Without `fd on` the interface
-only sends and receives classic frames and the data bitrate defaults to the
-next value above the nominal one.
+## Documentation
 
-### Any bitrate and sample point on CAN3
+| Document | Content |
+|---|---|
+| [doc/linux-driver.md](doc/linux-driver.md) | Build, attach, bitrates, CAN FD bit timing, errors and statistics, flow control, udev, WSL2, module parameters, limits |
+| [doc/savvycan-guide.md](doc/savvycan-guide.md) | SavvyCAN with the Triple: connection, capture, sending, Bus Statistics, CANopen, Response Meter, CAN Calculator, printing |
+| [doc/reverse-engineering.md](doc/reverse-engineering.md) | Signal Finder, window comparison, multiplexers, DBC export, AI Assistant setup, limits and examples, `canre_cli` |
+| [gui/savvycan/README.md](gui/savvycan/README.md) | How the SavvyCAN changes are applied and built (Windows and Linux) |
+| [doc/protocol.md](doc/protocol.md) | The adapter's USB protocol: framing, commands, status message, measured behaviour |
+| [doc/pp2can-gap.md](doc/pp2can-gap.md) | PP2CAN features and where they are in SavvyCAN |
+| [doc/PLAN.md](doc/PLAN.md) | Roadmap and test record |
 
-With the module parameter `fd_bittiming=1`, CAN3 takes any bitrate its
-controller (MCP2517FD, 40 MHz) can reach, sample points, and bit timing in
-time quanta; the kernel computes the timing and the driver sends it as raw
-controller timing. Transmitter delay compensation is automatic when the
-data prescaler is 1 or 2.
+## Repository layout
 
-```sh
-echo "options usb2cansocketcan fd_bittiming=1" | sudo tee /etc/modprobe.d/usb2cansocketcan.conf
-sudo ip link set can2 type can bitrate 500000 sample-point 0.8 \
-     dbitrate 2000000 dsample-point 0.8 fd on
-sudo ip link set can2 type can bitrate 800000 sample-point 0.8 \
-     dbitrate 4000000 dsample-point 0.8 fd on       # not in the fixed table
-```
-
-Give both sample points as 0.8 to talk to other Triples and to PP2CAN: the
-firmware's fixed table uses about 80 %, and with the kernel's defaults
-(87.5 % nominal below 800 kbit/s, 75 % data) frames with bit rate switching
-were lost in tests. `scripts/triple-attach.sh` adds them when the
-parameter is set. `ip -details link show can2` shows the computed timing,
-and the kernel log the raw values sent.
-
-`ip -details -s link show can0` shows the bus state and the error counters
-reported by the adapter; error frames are delivered to sockets on state
-changes (`candump -e any,0:0,#FFFFFFFF`).
-
-Per-adapter interface names: the three devices carry `dev_port` 0, 1, 2
-(CAN1..CAN3) in sysfs, and the USB serial number is reachable through the
-parent device, so a udev rule can name them. `etc/udev/rules.d/` has an
-example together with a rule that starts `ldattach` automatically when an
-adapter is plugged in (`etc/systemd/system/usb2can-triple@.service`).
-
-## Limits
-
-* Frames longer than 100 bytes on the wire (CAN FD with many data bytes
-  equal to 0x0F, 0x1F or 0xEF, which need escaping) are dropped with
-  `tx_dropped`, because they lock up the adapter firmware until it is power
-  cycled. Module parameter `max_wire_len` raises the limit if a newer
-  firmware allows it.
-* Sustained receive rate is limited by the adapter's USB side: roughly
-  2000 to 5000 frames/s per adapter (measured through usbipd into WSL2).
-  Beyond that the firmware drops frames; the driver counts each overload
-  in `rx_over_errors` and sends a `CAN_ERR_CRTL_RX_OVERFLOW` error frame.
-  `hwtstamp=0` turns the adapter's receive timestamps off.
-* Transmit is paced by the adapter's buffer fill, reported every 250 ms,
-  so a slow or blocked bus holds the queue (`cangen` blocks, `cansend`
-  gets ENOBUFS) instead of the adapter dropping frames. Frames the adapter
-  dropped anyway are counted in `tx_dropped` with a
-  `CAN_ERR_CRTL_TX_OVERFLOW` error frame. A healthy 1 Mbit/s bus takes
-  about 2100 frames/s from one port (`doc/protocol.md` 5.1).
-* CAN1 and CAN2 only take the firmware's fixed bitrates; CAN3 takes any
-  bit timing with `fd_bittiming=1` (see above).
-* The trigger/marker input and the firmware's bus-off indication are not
-  decoded yet (bus-off has not been observed on hardware).
-
-`debug=1` (module parameter or `/sys/module/usb2cansocketcan/parameters/debug`)
-hex dumps every message exchanged with the adapter.
-
-## GUI analyzer: SavvyCAN
-
-`gui/savvycan/` adds a native "CANLAB USB2CAN Triple (serial)" connection
-type to [SavvyCAN](https://github.com/collin80/SavvyCAN): three buses per
-adapter, bitrates and FD settings from its connection window, hardware
-timestamps, transmit on all buses. It talks to the adapter over the serial
-port, so it works without the kernel module and on Windows too. See
-`gui/savvycan/README.md` for build and use.
-
-![SavvyCAN with a USB2CAN Triple](doc/img/savvycan-triple.png)
-
-For reverse engineering, SavvyCAN gets a Signal Finder (counters, checksums
-and signals found automatically, DBC export, before/after comparison) and
-an AI Assistant that works on the capture through your Anthropic API key,
-with user-set limits on tokens, tool calls, requests and bus access.
-
-`tools/canopen_sim.py` is a small simulated CANopen node (heartbeat, NMT,
-SDO incl. block transfer, EMCY, PDOs, LSS; EDS in `tools/canopen_sim.eds`) for testing CANopen tools
-on any SocketCAN interface.
-
-## Without the kernel module
-
-`tools/triple_dump.py` talks to an adapter directly over its serial port
-with pyserial and prints received frames; it runs on Windows and macOS as
-well (`python3 tools/triple_dump.py COM7 --send 1 123#11223344`). It cannot
-share a port with the kernel driver. The wire protocol is documented in
-`doc/protocol.md`; `tools/triple_proto.py` is the Python codec it uses.
+| Path | Content |
+|---|---|
+| `driver/` | Kernel module (`triple.c`) and the shared protocol codec (`triple_proto.[ch]`) |
+| `gui/savvycan/` | SavvyCAN connection, tool windows, `apply.py` and the upstream patch |
+| `tools/` | Python codec and `triple_dump.py` (adapter without the kernel module), CANopen node simulator, `re_demo.py`, `canre/` command line analysis |
+| `scripts/`, `etc/` | Attach / detach scripts, udev rule, systemd unit |
+| `tests/` | Codec tests (C and Python, with captured firmware messages), unit tests of the tool windows' logic |
+| `ci/kbuild/` | Kernel build matrix in Docker |
+| `doc/` | Documentation and screenshots |
 
 ## Development
 
-* `make -C tests/codec test` runs the host-side codec test, including byte
-  sequences captured from the firmware; `python3 tools/test_triple_proto.py`
-  runs the same vectors against the Python codec.
-* `sh ci/kbuild/run.sh` compiles the module against several kernel header
-  sets in Docker.
-* `doc/PLAN.md` is the roadmap: next is a CAN bus analyzer GUI.
+```sh
+make -C tests/codec test                 # C codec, captured firmware vectors
+python3 tools/test_triple_proto.py       # same vectors, Python codec
+make -C tests/gui test                   # analysis, CANopen, AI tools, print layout
+sh ci/kbuild/run.sh                      # the driver against several kernels (Docker)
+```
 
-Driver v1.x (tty line discipline plus the `tripled` daemon, kernels up to
-5.15) lives in the git history before tag `v2.0`.
+Driver v1.x (line discipline plus the `tripled` daemon, kernels up to
+5.15) is in the git history before tag `v2.0`.
+
+## Status
+
+Verified on two adapters wired back to back (firmware 1.41), on Linux
+(native and WSL2) and Windows 11. Not decoded yet: the trigger/marker
+input, the firmware's bus-off indication, and hardware-timed periodic
+sending; these need the firmware documentation. The AI Assistant has
+been tested against a local mock of the Anthropic Messages API, not yet
+against the real service.
 
 ## License
 
-Each source file states its license in an `SPDX-License-Identifier` line;
-the full texts are in `LICENSES/` and `LICENSE` lists the assignment.
+Each source file states its license in an `SPDX-License-Identifier`
+line; the full texts are in `LICENSES/` and `LICENSE` lists the
+assignment.
 
 | Part | License |
 |---|---|
 | Kernel module `driver/triple.c` | GPL-2.0 (required for a Linux kernel module) |
-| Protocol codec `driver/triple_proto.[ch]`, SavvyCAN connection `gui/savvycan/`, Python tools `tools/`, tests | MIT |
+| Protocol codec `driver/triple_proto.[ch]`, SavvyCAN additions `gui/savvycan/`, tools, tests | MIT |
 
-MIT is compatible with the GPL, so the module as a whole is GPL-2.0 while
-the codec can also be used in MIT projects such as SavvyCAN.
+MIT is compatible with the GPL, so the module as a whole is GPL-2.0
+while the codec can also be used in MIT projects such as SavvyCAN.
