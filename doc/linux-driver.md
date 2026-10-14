@@ -44,10 +44,10 @@ sudo insmod usb2cansocketcan.ko
 To install it permanently with DKMS (rebuilt on kernel updates):
 
 ```sh
-sudo cp -r driver /usr/src/usb2cansocketcan-2.0
-sudo dkms add -m usb2cansocketcan -v 2.0
-sudo dkms build -m usb2cansocketcan -v 2.0
-sudo dkms install -m usb2cansocketcan -v 2.0
+sudo cp -r driver /usr/src/usb2cansocketcan-2.1.0
+sudo dkms add -m usb2cansocketcan -v 2.1.0
+sudo dkms build -m usb2cansocketcan -v 2.1.0
+sudo dkms install -m usb2cansocketcan -v 2.1.0
 ```
 
 ## Attach an adapter

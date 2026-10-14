@@ -22,3 +22,6 @@ __pycache__/
 # reverse engineering command line tool
 tools/canre/canre_cli
 tools/canre/canre_cli.exe
+# distribution build output
+dist/out/
+dist/work/

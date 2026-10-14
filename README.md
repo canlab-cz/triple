@@ -20,6 +20,14 @@ on one USB port, CAN1 and CAN2 classic CAN, CAN3 CAN FD
 
 ![Signal Finder decoding a simulated engine message](doc/img/re-signal-finder-engine.png)
 
+## Packages
+
+Prebuilt packages: `.deb` for Ubuntu 22.04+ and Debian 12+ (driver as
+DKMS, SavvyCAN, tools), a tarball for other Linux distributions (with an
+installer and SavvyCAN bundled with its Qt libraries), and a Windows
+installer and portable zip. How to install and build them:
+[dist/README.md](dist/README.md).
+
 ## Quick start
 
 ### Linux: SocketCAN
@@ -98,6 +106,7 @@ Finder or AI Assistant. Walkthrough with AI Assistant examples:
 | [gui/savvycan/README.md](gui/savvycan/README.md) | How the SavvyCAN changes are applied and built (Windows and Linux) |
 | [doc/protocol.md](doc/protocol.md) | The adapter's USB protocol: framing, commands, status message, measured behaviour |
 | [doc/pp2can-gap.md](doc/pp2can-gap.md) | PP2CAN features and where they are in SavvyCAN |
+| [dist/README.md](dist/README.md) | Distribution packages: Debian, Linux tarball, Windows installer; installing and building them |
 | [doc/PLAN.md](doc/PLAN.md) | Roadmap and test record |
 
 ## Repository layout
@@ -122,7 +131,7 @@ sh ci/kbuild/run.sh                      # the driver against several kernels (D
 ```
 
 Driver v1.x (line discipline plus the `tripled` daemon, kernels up to
-5.15) is in the git history before tag `v2.0`.
+5.15) is in the git history before the 2.0 rewrite.
 
 ## Status
 
