@@ -35,6 +35,10 @@ typedef uint16_t u16;
 typedef uint32_t u32;
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define TRIPLE_FIRST_BYTE   0x0F
 #define TRIPLE_LAST_BYTE    0xEF
 #define TRIPLE_ESC_BYTE     0x1F
@@ -193,5 +197,9 @@ u32 triple_fd_default_data_bitrate(u32 nominal);
 /* DLC code <-> length */
 u8 triple_dlc2len(u8 dlc);
 u8 triple_len2dlc(u8 len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TRIPLE_PROTO_H */

@@ -108,6 +108,19 @@ Done 2026-10-14:
 
 ### Phase 4: analyzer GUI (PP2CAN-like)
 
+Decision 2026-10-14: build on SavvyCAN (MIT, Qt). First milestone done the same day, see `gui/savvycan/`:
+
+- [x] New connection type `CANCon::TRIPLE` ("CANLAB USB2CAN Triple (serial)"): `gui/savvycan/connections/triple_serial.[h,cpp]` on top of the shared codec; `apply.py` copies the sources and edits 8 upstream files (project file, type enum, factory, dialog, connection window); `savvycan-upstream.patch` is the same diff.
+- [x] Three buses per adapter, bitrates / listen-only / FD data rate / non-ISO from the connection window, adapters listed first in the port list by USB id, 100-byte wire limit enforced, error counters and firmware version in the device console.
+- [x] Receive with the adapter's hardware timestamps mapped onto SavvyCAN's manager-relative clock (103 ms spacing shown for 100 ms sends), transmit through the frame sender (13 of 13 frames at 200 ms received by the kernel driver on the second adapter), CAN FD frame on bus 2, extended ids.
+- [x] Built with Qt 5.15 on Ubuntu 22.04 under WSL2 and exercised on the WSLg display with xdotool-driven screenshots (`doc/img/savvycan-triple.png`).
+- [ ] Windows build and test (Qt 5.15 + MSVC/MinGW, port `COMx`); the code has no Linux-specific parts.
+- [ ] Bus-off / error frames into SavvyCAN's frame list (currently console only), marker input, status fields once the firmware source clarifies them.
+- [ ] Upstream pull request to collin80/SavvyCAN once the Windows build is confirmed.
+- [ ] PP2CAN feature gap review: what SavvyCAN already covers (logs, DBC, graphs, replay, sender, scripting, ISO-TP/UDS) versus what needs adding (CANopen tools, reply maker, gateway, HW sync).
+
+Original design notes:
+
 Backend abstraction with two implementations:
 
 1. SocketCAN backend (Linux, any adapter).

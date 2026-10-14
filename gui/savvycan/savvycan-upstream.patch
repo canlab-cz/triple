@@ -1,0 +1,199 @@
+diff --git a/SavvyCAN.pro b/SavvyCAN.pro
+index d7197dc..b4ede39 100644
+--- a/SavvyCAN.pro
++++ b/SavvyCAN.pro
+@@ -28,6 +28,8 @@ SOURCES += main.cpp\
+     connections/canlogserver.cpp \
+     connections/canserver.cpp \
+     connections/lawicel_serial.cpp \
++    connections/triple_serial.cpp \
++    connections/triple_proto.c \
+     connections/mqtt_bus.cpp \
+     dbc/dbcnodeduplicateeditor.cpp \
+     framesenderobject.cpp \
+@@ -114,6 +116,8 @@ HEADERS  += mainwindow.h \
+     connections/canlogserver.h \
+     connections/canserver.h \
+     connections/lawicel_serial.h \
++    connections/triple_serial.h \
++    connections/triple_proto.h \
+     connections/socketcand.h \
+     connections/mqtt_bus.h \
+     dbc/dbcnodeduplicateeditor.h \
+diff --git a/connections/canconconst.h b/connections/canconconst.h
+index 0f7ba9c..2154d04 100644
+--- a/connections/canconconst.h
++++ b/connections/canconconst.h
+@@ -23,6 +23,7 @@ namespace CANCon {
+         LAWICEL,
+         CANSERVER,
+         CANLOGSERVER,
++        TRIPLE,         /*!< CANLAB USB2CAN Triple over serial */
+         NONE
+     };
+ }
+diff --git a/connections/canconfactory.cpp b/connections/canconfactory.cpp
+index 774c92c..110ce81 100644
+--- a/connections/canconfactory.cpp
++++ b/connections/canconfactory.cpp
+@@ -7,6 +7,7 @@
+ #include "lawicel_serial.h"
+ #include "canserver.h"
+ #include "canlogserver.h"
++#include "triple_serial.h"
+ 
+ using namespace CANCon;
+ 
+@@ -32,6 +33,8 @@ CANConnection* CanConFactory::create(type pType, QString pPortName, QString pDri
+         return new CANserver(pPortName);
+     case CANLOGSERVER:
+         return new CanLogServer(pPortName);
++    case TRIPLE:
++        return new TripleSerial(pPortName);
+     default: {}
+     }
+ 
+diff --git a/connections/canconnectionmodel.cpp b/connections/canconnectionmodel.cpp
+index c014f55..e9d9414 100644
+--- a/connections/canconnectionmodel.cpp
++++ b/connections/canconnectionmodel.cpp
+@@ -89,6 +89,7 @@ QVariant CANConnectionModel::data(const QModelIndex &index, int role) const
+                         case CANCon::LAWICEL: return "LAWICEL";
+                         case CANCon::CANSERVER: return "CANserver";
+                         case CANCon::CANLOGSERVER: return "CanLogServer";
++                        case CANCon::TRIPLE: return "USB2CAN Triple";
+                         default: {}
+                     }
+                 else qDebug() << "Tried to show connection type but connection was nullptr";
+diff --git a/connections/connectionwindow.cpp b/connections/connectionwindow.cpp
+index aa0caf3..2cc6b76 100644
+--- a/connections/connectionwindow.cpp
++++ b/connections/connectionwindow.cpp
+@@ -411,7 +411,8 @@ void ConnectionWindow::populateBusDetails(int offset)
+         //ui->lblBusNum->setText(QString::number(busBase + offset));
+         ui->ckListenOnly->setChecked(bus.isListenOnly());
+         ui->ckEnable->setChecked(bus.isActive());
+-        if (conn_p->getType() == CANCon::type::SERIALBUS || conn_p->getType() == CANCon::type::LAWICEL)
++        if (conn_p->getType() == CANCon::type::SERIALBUS || conn_p->getType() == CANCon::type::LAWICEL ||
++            (conn_p->getType() == CANCon::type::TRIPLE && offset == 2))
+         {
+             ui->canFDEnable->setVisible(true);
+             ui->canFDEnable_label->setVisible(true);
+diff --git a/connections/newconnectiondialog.cpp b/connections/newconnectiondialog.cpp
+index 85163e2..5d2dfb5 100644
+--- a/connections/newconnectiondialog.cpp
++++ b/connections/newconnectiondialog.cpp
+@@ -30,6 +30,7 @@ NewConnectionDialog::NewConnectionDialog(QVector<QString>* gvretips, QVector<QSt
+     connect(ui->rbLawicel, &QAbstractButton::clicked, this, &NewConnectionDialog::handleConnTypeChanged);
+     connect(ui->rbCANserver, &QAbstractButton::clicked, this, &NewConnectionDialog::handleConnTypeChanged);
+     connect(ui->rbCanlogserver, &QAbstractButton::clicked, this, &NewConnectionDialog::handleConnTypeChanged);
++    connect(ui->rbTriple, &QAbstractButton::clicked, this, &NewConnectionDialog::handleConnTypeChanged);
+ 
+     connect(ui->cbDeviceType, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &NewConnectionDialog::handleDeviceTypeChanged);
+     connect(ui->btnOK, &QPushButton::clicked, this, &NewConnectionDialog::handleCreateButton);
+@@ -70,6 +71,7 @@ void NewConnectionDialog::handleConnTypeChanged()
+     if (ui->rbMQTT->isChecked()) selectMQTT();
+     if (ui->rbCANserver->isChecked()) selectCANserver();
+     if (ui->rbCanlogserver->isChecked()) selectCANlogserver();
++    if (ui->rbTriple->isChecked()) selectTriple();
+ }
+ 
+ void NewConnectionDialog::handleDeviceTypeChanged()
+@@ -82,6 +84,33 @@ void NewConnectionDialog::handleDeviceTypeChanged()
+         ui->cbPort->addItem(canDevices[i].name());
+ }
+ 
++void NewConnectionDialog::selectTriple()
++{
++    /* bitrates are set per bus in the connection window; the serial speed is irrelevant for CDC ACM */
++    ui->lPort->setText("Serial Port:");
++    ui->lblDeviceType->setHidden(true);
++    ui->cbDeviceType->setHidden(true);
++    ui->cbCANSpeed->setHidden(true);
++    ui->cbSerialSpeed->setHidden(true);
++    ui->lblCANSpeed->setHidden(true);
++    ui->lblSerialSpeed->setHidden(true);
++    ui->cbCanFd->setHidden(true);
++    ui->cbDataRate->setHidden(true);
++    ui->lblDataRate->setHidden(true);
++
++    ui->cbPort->clear();
++    ports = QSerialPortInfo::availablePorts();
++    for (int i = 0; i < ports.count(); i++)
++    {
++        /* list the adapters first (USB 04d8:f0d7) */
++        if (ports[i].vendorIdentifier() == 0x04d8 && ports[i].productIdentifier() == 0xf0d7)
++            ui->cbPort->insertItem(0, ports[i].portName());
++        else
++            ui->cbPort->addItem(ports[i].portName());
++    }
++    ui->cbPort->setCurrentIndex(0);
++}
++
+ void NewConnectionDialog::selectLawicel()
+ {
+     ui->lPort->setText("Serial Port:");
+@@ -299,6 +328,9 @@ void NewConnectionDialog::setPortName(CANCon::type pType, QString pPortName, QSt
+         case CANCon::CANLOGSERVER:
+           ui->rbCanlogserver->setChecked(true);
+           break;
++        case CANCon::TRIPLE:
++          ui->rbTriple->setChecked(true);
++          break;
+         default: {}
+     }
+ 
+@@ -309,6 +341,7 @@ void NewConnectionDialog::setPortName(CANCon::type pType, QString pPortName, QSt
+     {
+         case CANCon::GVRET_SERIAL:
+         case CANCon::LAWICEL:
++        case CANCon::TRIPLE:
+         {
+             int idx = ui->cbPort->findText(pPortName);
+             if( idx<0 ) idx=0;
+@@ -360,6 +393,7 @@ QString NewConnectionDialog::getPortName()
+     case CANCon::REMOTE:
+     case CANCon::MQTT:
+     case CANCon::LAWICEL:
++    case CANCon::TRIPLE:
+         return ui->cbPort->currentText();
+     case CANCon::KAYAK:
+         return ui->cbPort->currentText();
+@@ -411,6 +445,7 @@ CANCon::type NewConnectionDialog::getConnectionType()
+     if (ui->rbLawicel->isChecked()) return CANCon::LAWICEL;
+     if (ui->rbCANserver->isChecked()) return CANCon::CANSERVER;
+     if (ui->rbCanlogserver->isChecked()) return CANCon::CANLOGSERVER;
++    if (ui->rbTriple->isChecked()) return CANCon::TRIPLE;
+     qDebug() << "getConnectionType: error";
+ 
+     return CANCon::NONE;
+diff --git a/connections/newconnectiondialog.h b/connections/newconnectiondialog.h
+index 387a4fb..1053355 100644
+--- a/connections/newconnectiondialog.h
++++ b/connections/newconnectiondialog.h
+@@ -50,6 +50,7 @@ private:
+     void selectLawicel();
+     void selectCANserver();
+     void selectCANlogserver();
++    void selectTriple();
+     bool isSerialBusAvailable();
+     void setPortName(CANCon::type pType, QString pPortName, QString pDriver);
+ };
+diff --git a/ui/newconnectiondialog.ui b/ui/newconnectiondialog.ui
+index e459583..8a79fa3 100644
+--- a/ui/newconnectiondialog.ui
++++ b/ui/newconnectiondialog.ui
+@@ -78,6 +78,13 @@
+         </property>
+        </widget>
+       </item>
++      <item row="8" column="0">
++       <widget class="QRadioButton" name="rbTriple">
++        <property name="text">
++         <string>CANLAB USB2CAN Triple (serial)</string>
++        </property>
++       </widget>
++      </item>
+       <item row="7" column="0">
+        <widget class="QRadioButton" name="rbCanlogserver">
+         <property name="text">

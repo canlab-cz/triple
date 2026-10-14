@@ -104,6 +104,17 @@ adapter is plugged in (`etc/systemd/system/usb2can-triple@.service`).
 `debug=1` (module parameter or `/sys/module/usb2cansocketcan/parameters/debug`)
 hex dumps every message exchanged with the adapter.
 
+## GUI analyzer: SavvyCAN
+
+`gui/savvycan/` adds a native "CANLAB USB2CAN Triple (serial)" connection
+type to [SavvyCAN](https://github.com/collin80/SavvyCAN): three buses per
+adapter, bitrates and FD settings from its connection window, hardware
+timestamps, transmit on all buses. It talks to the adapter over the serial
+port, so it works without the kernel module and on Windows too. See
+`gui/savvycan/README.md` for build and use.
+
+![SavvyCAN with a USB2CAN Triple](doc/img/savvycan-triple.png)
+
 ## Without the kernel module
 
 `tools/triple_dump.py` talks to an adapter directly over its serial port
