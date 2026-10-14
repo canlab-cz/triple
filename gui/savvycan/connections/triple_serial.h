@@ -11,12 +11,21 @@
  */
 
 #include <QSerialPort>
-#include <QTimer>
 #include <QByteArray>
 #include <stdint.h>
 
 #include "canconnection.h"
 #include "triple_proto.h"
+
+/* SavvyCAN master (Qt 5) passes CANFrame (a QCanBusFrame); the QT6WIP
+ * branch (Qt 6) uses its own CommFrame. The two differ in a few names. */
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+typedef CommFrame TripleGuiFrame;
+#define TRIPLE_GUI_DATA_FRAME CommFrame::CANDataFrame
+#else
+typedef CANFrame TripleGuiFrame;
+#define TRIPLE_GUI_DATA_FRAME QCanBusFrame::DataFrame
+#endif
 
 class TripleSerial : public CANConnection
 {
@@ -32,7 +41,7 @@ protected:
     virtual void piSetBusSettings(int pBusIdx, CANBus pBus);
     virtual bool piGetBusSettings(int pBusIdx, CANBus& pBus);
     virtual void piSuspend(bool pSuspend);
-    virtual bool piSendFrame(const CANFrame&);
+    virtual bool piSendFrame(const TripleGuiFrame&);
 
 public slots:
     void debugInput(QByteArray bytes);
@@ -40,13 +49,13 @@ public slots:
 private slots:
     void readSerialData();
     void serialError(QSerialPort::SerialPortError err);
-    void handleTick();
 
 private:
     void connectDevice();
     void disconnectDevice();
     void sendToSerial(const QByteArray &bytes);
     void sendDebug(const QString &text);
+    bool consoleWanted();
     void sendBusSettings(int busIdx);
     void processMessage(const uint8_t *wire, int len);
     void handleFrame(const triple_frame &f);
@@ -54,7 +63,6 @@ private:
     qint64 adapterTimeToMicros(uint32_t ts);
 
     QSerialPort *serial;
-    QTimer       mTimer;
 
     /* receive stream splitter (same rules as the kernel driver) */
     uint8_t  rxBuf[TRIPLE_MTU];

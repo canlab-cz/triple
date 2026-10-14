@@ -45,6 +45,13 @@ patch("SavvyCAN.pro",
       "    connections/lawicel_serial.h" + BS,
       "    connections/lawicel_serial.h" + BS + "    connections/triple_serial.h" + BS + "    connections/triple_proto.h" + BS)
 
+if os.path.exists(os.path.join(S, "CMakeLists.txt")):
+    patch("CMakeLists.txt",
+          "    connections/lawicel_serial.cpp connections/lawicel_serial.h\n",
+          "    connections/lawicel_serial.cpp connections/lawicel_serial.h\n"
+          "    connections/triple_serial.cpp connections/triple_serial.h\n"
+          "    connections/triple_proto.c connections/triple_proto.h\n")
+
 patch("connections/canconconst.h",
       "        CANLOGSERVER,\n        NONE\n",
       "        CANLOGSERVER,\n        TRIPLE,         /*!< CANLAB USB2CAN Triple over serial */\n        NONE\n")
@@ -128,9 +135,13 @@ patch("connections/newconnectiondialog.cpp",
       "    if (ui->rbCanlogserver->isChecked()) return CANCon::CANLOGSERVER;\n"
       "    if (ui->rbTriple->isChecked()) return CANCon::TRIPLE;\n")
 
-patch("connections/connectionwindow.cpp",
-      "        if (conn_p->getType() == CANCon::type::SERIALBUS || conn_p->getType() == CANCon::type::LAWICEL)\n",
-      "        if (conn_p->getType() == CANCon::type::SERIALBUS || conn_p->getType() == CANCon::type::LAWICEL ||\n"
-      "            (conn_p->getType() == CANCon::type::TRIPLE && offset == 2))\n")
+cw = open(os.path.join(S, "connections/connectionwindow.cpp"), encoding="utf-8").read()
+if "isCanFDCapable()" in cw:
+    print("connectionwindow.cpp: QT6WIP branch, FD controls follow CANBus::isCanFDCapable(), no edit needed")
+else:
+    patch("connections/connectionwindow.cpp",
+          "        if (conn_p->getType() == CANCon::type::SERIALBUS || conn_p->getType() == CANCon::type::LAWICEL)\n",
+          "        if (conn_p->getType() == CANCon::type::SERIALBUS || conn_p->getType() == CANCon::type::LAWICEL ||\n"
+          "            (conn_p->getType() == CANCon::type::TRIPLE && offset == 2))\n")
 
 print("done: rebuild SavvyCAN (qmake && make)")
