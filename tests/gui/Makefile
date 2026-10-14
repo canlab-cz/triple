@@ -25,10 +25,14 @@ canre_test: canre_test.cpp $(RE)/canre.h
 aitools_test: aitools_test.cpp $(RE)/aitools.h $(RE)/canre.h
 	$(CXX) $(CXXFLAGS) -I $(RE) -o $@ aitools_test.cpp
 
-test: canidcalc_test pp2canlog_test canopen_eds_test logprint_test canre_test aitools_test
+canopen_block_test: canopen_block_test.cpp $(RE)/canopen_block.h
+	$(CXX) $(CXXFLAGS) -I $(RE) -o $@ canopen_block_test.cpp
+
+test: canidcalc_test pp2canlog_test canopen_eds_test logprint_test canre_test aitools_test canopen_block_test
 	./canidcalc_test
 	./pp2canlog_test
 	./canopen_eds_test ../../tools/canopen_sim.eds
+	./canopen_block_test
 	./logprint_test
 	./canre_test > canre_test.out || (cat canre_test.out; false)
 	tail -1 canre_test.out
@@ -37,6 +41,6 @@ test: canidcalc_test pp2canlog_test canopen_eds_test logprint_test canre_test ai
 	./aitools_test --defs | python3 -c "import json,sys; d=json.load(sys.stdin); print('tool definitions: %d valid JSON tools' % len(d))"
 
 clean:
-	rm -f canidcalc_test pp2canlog_test canopen_eds_test logprint_test canre_test canre_test.out aitools_test aitools_test.out
+	rm -f canidcalc_test pp2canlog_test canopen_eds_test logprint_test canre_test canre_test.out aitools_test aitools_test.out canopen_block_test
 
 .PHONY: test clean

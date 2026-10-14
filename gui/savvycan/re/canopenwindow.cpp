@@ -2,6 +2,7 @@
 // Copyright (c) 2026 CANLAB s.r.o.
 #include "canopenwindow.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
 #include <QFile>
@@ -20,6 +21,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <functional>
 
 #include "connections/canconmanager.h"
 #include "savvycompat.h"
@@ -125,6 +127,7 @@ CANopenWindow::CANopenWindow(QWidget *parent) : QWidget(parent, Qt::Window)
     connect(identityBtn, &QPushButton::clicked, this, &CANopenWindow::identityClicked);
 
     resultLabel = new QLabel("-", this);
+    resultLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);   /* long results must not widen the window */
     resultLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
     QHBoxLayout *sdoRow1 = new QHBoxLayout;
@@ -138,11 +141,22 @@ CANopenWindow::CANopenWindow(QWidget *parent) : QWidget(parent, Qt::Window)
     sdoRow1->addWidget(typeCombo);
     sdoRow1->addWidget(readBtn);
     sdoRow1->addWidget(identityBtn);
+    blockCheck = new QCheckBox(tr("Block transfer"), this);
+    blockCheck->setToolTip(tr("SDO block transfer (fast for large objects, CRC checked); falls back to normal SDO "
+                              "when the node does not support it"));
+    sdoRow1->addWidget(blockCheck);
     sdoRow1->addStretch(1);
     QHBoxLayout *sdoRow2 = new QHBoxLayout;
     sdoRow2->addWidget(new QLabel(tr("Value"), this));
     sdoRow2->addWidget(valueEdit, 1);
     sdoRow2->addWidget(writeBtn);
+    QPushButton *writeFileBtn = new QPushButton(tr("Write file..."), this);
+    writeFileBtn->setToolTip(tr("Writes the bytes of a file to the object (e.g. a program download to 1F50:01)"));
+    QPushButton *saveReadBtn = new QPushButton(tr("Save read data..."), this);
+    sdoRow2->addWidget(writeFileBtn);
+    sdoRow2->addWidget(saveReadBtn);
+    connect(writeFileBtn, &QPushButton::clicked, this, &CANopenWindow::writeFileClicked);
+    connect(saveReadBtn, &QPushButton::clicked, this, &CANopenWindow::saveReadClicked);
     QHBoxLayout *sdoRow3 = new QHBoxLayout;
     sdoRow3->addWidget(new QLabel(tr("Result"), this));
     sdoRow3->addWidget(resultLabel, 1);
@@ -201,6 +215,7 @@ CANopenWindow::CANopenWindow(QWidget *parent) : QWidget(parent, Qt::Window)
     QTabWidget *tabs = new QTabWidget(this);
     tabs->addTab(logView, tr("Log"));
     tabs->addTab(pdoPage, tr("PDOs"));
+    tabs->addTab(buildLssPage(), tr("LSS"));
 
     QVBoxLayout *layout = new QVBoxLayout(this);
     layout->addLayout(nmtRow);
@@ -315,7 +330,12 @@ void CANopenWindow::framesReceived(CANConnection *conn, QVector<CANopenFrame> &f
         }
         else if (fn == 0x580 && jobActive && node == job.node && d.size() == 8)  /* SDO response */
         {
-            handleSdoResponse(d);
+            if (job.block) handleBlockResponse(d);
+            else handleSdoResponse(d);
+        }
+        else if (id == canopen::lss::SLAVE_COB && d.size() >= 1)               /* LSS answer */
+        {
+            lssReply(d);
         }
     }
 }
@@ -374,6 +394,7 @@ void CANopenWindow::readClicked()
         return;
     j.upload = true;
     j.type = ValueType(typeCombo->currentIndex());
+    j.block = blockCheck->isChecked();
     queue.append(j);
     startNextJob();
 }
@@ -387,6 +408,7 @@ void CANopenWindow::writeClicked()
     j.upload = false;
     j.type = ValueType(typeCombo->currentIndex());
     j.data = encodeValue(j.type, valueEdit->text(), ok);
+    j.block = blockCheck->isChecked();
     if (!ok || j.data.isEmpty())
     {
         resultLabel->setText(tr("value does not fit the selected type"));
@@ -429,6 +451,23 @@ void CANopenWindow::startNextJob()
     job = queue.takeFirst();
     jobActive = true;
 
+    if (job.block)
+    {
+        if (job.upload)
+        {
+            job.blockUp = std::make_shared<canopen::BlockUpload>(job.index, job.sub);
+            sendFrame8(0x600 + job.node, job.blockUp->start());
+        }
+        else
+        {
+            std::vector<uint8_t> bytes(job.data.begin(), job.data.end());
+            job.blockDown = std::make_shared<canopen::BlockDownload>(job.index, job.sub, bytes);
+            sendFrame8(0x600 + job.node, job.blockDown->start());
+        }
+        sdoTimer.start(SDO_TIMEOUT_MS);
+        return;
+    }
+
     QByteArray d(8, 0);
     d[1] = char(job.index & 0xFF);
     d[2] = char(job.index >> 8);
@@ -458,6 +497,56 @@ void CANopenWindow::startNextJob()
     sdoTimer.start(SDO_TIMEOUT_MS);
 }
 
+void CANopenWindow::sendFrame8(quint32 id, const canopen::Frame8 &f)
+{
+    send(id, QByteArray(reinterpret_cast<const char *>(f.d), 8));
+}
+
+void CANopenWindow::handleBlockResponse(const QByteArray &d)
+{
+    sdoTimer.start(SDO_TIMEOUT_MS);
+    std::vector<canopen::Frame8> out;
+    const uint8_t *p = reinterpret_cast<const uint8_t *>(d.constData());
+    canopen::BlockTransfer *t = job.upload ? static_cast<canopen::BlockTransfer *>(job.blockUp.get()) : job.blockDown.get();
+    canopen::Step r = job.upload ? job.blockUp->feed(p, out) : job.blockDown->feed(p, out);
+    for (const canopen::Frame8 &f : out)
+        sendFrame8(0x600 + job.node, f);
+    if (r == canopen::Step::Pending)
+        return;
+    if (r == canopen::Step::Done)
+    {
+        QString how = tr("block transfer, %1 blocks%2%3").arg(t->blocks).arg(t->crcUsed ? tr(", CRC ok") : QString())
+                          .arg(t->retransmits ? tr(", %1 retransmitted").arg(t->retransmits) : QString());
+        if (job.upload)
+        {
+            job.data = QByteArray(reinterpret_cast<const char *>(t->data.data()), int(t->data.size()));
+            lastRead = job.data;
+            lastReadName = QString("%1_%2").arg(hex(job.index, 4), hex(job.sub, 2));
+            QString shown = job.data.size() > 48 ? tr("%1 bytes: %2 ...").arg(job.data.size()).arg(QString(job.data.left(32).toHex(' ').toUpper()))
+                                                 : formatValue(job.type, job.data);
+            finishJob(shown + " (" + how + ")", true);
+        }
+        else
+            finishJob(tr("written, %1 bytes (%2)").arg(job.data.size()).arg(how), true);
+        return;
+    }
+    /* the node does not know block transfers: same job as normal SDO */
+    if (t->abortCode == 0x05040001 && t->blocks == 0)
+    {
+        log(tr("node %1 has no SDO block transfer (abort 05040001), using normal SDO").arg(job.node));
+        job.block = false;
+        job.blockUp.reset();
+        job.blockDown.reset();
+        queue.prepend(job);
+        sdoTimer.stop();
+        jobActive = false;
+        startNextJob();
+        return;
+    }
+    finishJob(tr("abort %1: %2%3").arg(hex(t->abortCode, 8), abortText(t->abortCode),
+                                       t->error.empty() ? QString() : " (" + QString::fromStdString(t->error) + ")"), false);
+}
+
 void CANopenWindow::handleSdoResponse(const QByteArray &d)
 {
     quint8 cs = quint8(d[0]);
@@ -479,6 +568,8 @@ void CANopenWindow::handleSdoResponse(const QByteArray &d)
             {
                 int n = (cs & 0x01) ? 4 - ((cs >> 2) & 0x03) : 4;
                 job.data = d.mid(4, n);
+                lastRead = job.data;
+                lastReadName = QString("%1_%2").arg(hex(job.index, 4), hex(job.sub, 2));
                 finishJob(formatValue(job.type, job.data), true);
                 return;
             }
@@ -502,7 +593,10 @@ void CANopenWindow::handleSdoResponse(const QByteArray &d)
             job.data.append(d.mid(1, n));
             if (cs & 0x01)                                     /* last segment */
             {
-                finishJob(formatValue(job.type, job.data), true);
+                lastRead = job.data;
+                lastReadName = QString("%1_%2").arg(hex(job.index, 4), hex(job.sub, 2));
+                finishJob(job.data.size() > 48 ? tr("%1 bytes: %2 ...").arg(job.data.size()).arg(QString(job.data.left(32).toHex(' ').toUpper()))
+                                               : formatValue(job.type, job.data), true);
                 return;
             }
             job.toggle = !job.toggle;
@@ -997,4 +1091,325 @@ void CANopenWindow::refreshPdos()
         pdoTable->item(l.row, 8)->setText(l.periodUs < 0 ? QString("-")
                                                           : QString("%1 ms").arg(l.periodUs / 1000.0, 0, 'f', 1));
     }
+}
+
+/* ------------------------------------------------------------ SDO with files */
+
+void CANopenWindow::writeFileClicked()
+{
+    SdoJob j;
+    if (!parseObject(j.node, j.index, j.sub))
+        return;
+    QSettings settings;
+    QString path = QFileDialog::getOpenFileName(this, tr("Write file to the object"), settings.value("CANopen/writeFile").toString());
+    if (path.isEmpty())
+        return;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+    {
+        resultLabel->setText(tr("cannot open %1").arg(path));
+        return;
+    }
+    j.data = f.readAll();
+    if (j.data.isEmpty())
+    {
+        resultLabel->setText(tr("%1 is empty").arg(path));
+        return;
+    }
+    settings.setValue("CANopen/writeFile", path);
+    j.upload = false;
+    j.type = T_HEX;
+    j.block = blockCheck->isChecked();
+    j.label = QFileInfo(path).fileName() + tr(", %1 bytes").arg(j.data.size());
+    queue.append(j);
+    startNextJob();
+}
+
+void CANopenWindow::saveReadClicked()
+{
+    if (lastRead.isEmpty())
+    {
+        resultLabel->setText(tr("read an object first"));
+        return;
+    }
+    QString path = QFileDialog::getSaveFileName(this, tr("Save read data"), lastReadName + ".bin");
+    if (path.isEmpty())
+        return;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    {
+        resultLabel->setText(tr("cannot write %1").arg(path));
+        return;
+    }
+    f.write(lastRead);
+    resultLabel->setText(tr("saved %1 bytes to %2").arg(lastRead.size()).arg(path));
+}
+
+/* --------------------------------------------------------------------- LSS */
+
+QWidget *CANopenWindow::buildLssPage()
+{
+    using namespace canopen;
+    QWidget *page = new QWidget(this);
+    lssTimer.setSingleShot(true);
+    connect(&lssTimer, &QTimer::timeout, this, &CANopenWindow::lssTimeout);
+
+    auto button = [this, page](const QString &text, const QString &tip, std::function<void()> fn) {
+        QPushButton *b = new QPushButton(text, page);
+        b->setToolTip(tip);
+        connect(b, &QPushButton::clicked, this, fn);
+        return b;
+    };
+
+    QHBoxLayout *row1 = new QHBoxLayout;
+    row1->addWidget(button(tr("Fastscan"), tr("Finds a node without node-ID (FFh) bit by bit and puts it into configuration state"),
+                           [this]() {
+                               if (lssFastscan) return;
+                               fastscan = lss::Fastscan();
+                               lssFastscan = true;
+                               lssStatus->setText(tr("fastscan running..."));
+                               log(tr("LSS fastscan started"));
+                               fastscanStep();
+                           }));
+    row1->addWidget(button(tr("Any unconfigured node?"), tr("LSS identify non-configured remote slave"), [this]() {
+        LssOp op;
+        op.frame = lss::cmd(lss::IDENTIFY_NON_CONFIGURED);
+        op.replyCs = lss::NON_CONFIGURED_RESPONSE;
+        op.label = tr("identify non-configured");
+        lssQueue(op);
+    }));
+    row1->addWidget(button(tr("All: configuration"), tr("Switch state global: every LSS node into configuration state"), [this]() {
+        LssOp op;
+        op.frame = lss::switchGlobal(true);
+        op.label = tr("all nodes to configuration state");
+        lssQueue(op);
+    }));
+    row1->addWidget(button(tr("All: waiting"), tr("Switch state global to waiting; a node that just got its first node-ID starts with it"),
+                           [this]() {
+                               LssOp op;
+                               op.frame = lss::switchGlobal(false);
+                               op.label = tr("all nodes to waiting state");
+                               lssQueue(op);
+                           }));
+    row1->addStretch(1);
+
+    QHBoxLayout *row2 = new QHBoxLayout;
+    const char *names[4] = { "Vendor", "Product", "Revision", "Serial" };
+    for (int i = 0; i < 4; i++)
+    {
+        lssId[i] = new QLineEdit(page);
+        lssId[i]->setPlaceholderText(tr("hex"));
+        lssId[i]->setMaximumWidth(110);
+        row2->addWidget(new QLabel(tr(names[i]), page));
+        row2->addWidget(lssId[i]);
+    }
+    row2->addWidget(button(tr("Select"), tr("Switch state selective: only the node with this identity goes to configuration state"),
+                           [this]() {
+                               for (int i = 0; i < 4; i++)
+                               {
+                                   bool ok;
+                                   quint32 v = lssId[i]->text().trimmed().remove("0x", Qt::CaseInsensitive).toUInt(&ok, 16);
+                                   if (!ok)
+                                   {
+                                       lssStatus->setText(tr("enter vendor, product, revision and serial in hex"));
+                                       lssOps.clear();
+                                       return;
+                                   }
+                                   LssOp op;
+                                   op.frame = lss::switchSelective(i, v);
+                                   op.label = tr("select by identity");
+                                   if (i == 3) op.replyCs = lss::SWITCH_SELECTIVE_RESPONSE;
+                                   lssQueue(op);
+                               }
+                           }));
+    row2->addWidget(button(tr("Inquire"), tr("Reads identity and node-ID of the node in configuration state"), [this]() {
+        for (int i = 0; i < 5; i++)
+        {
+            LssOp op;
+            op.frame = lss::inquire(quint8(lss::INQUIRE_VENDOR + i));
+            op.replyCs = quint8(lss::INQUIRE_VENDOR + i);
+            op.part = i;
+            op.label = tr("inquire");
+            lssQueue(op);
+        }
+    }));
+    row2->addStretch(1);
+
+    QHBoxLayout *row3 = new QHBoxLayout;
+    lssNodeId = new QSpinBox(page);
+    lssNodeId->setRange(1, 127);
+    lssNodeId->setValue(10);
+    row3->addWidget(new QLabel(tr("Node-ID"), page));
+    row3->addWidget(lssNodeId);
+    row3->addWidget(button(tr("Set node-ID"), tr("Configure node-ID; it becomes active after NMT reset communication "
+                                                 "(or, for a node that had none, when switched to waiting)"),
+                           [this]() {
+                               LssOp op;
+                               op.frame = lss::configureNodeId(quint8(lssNodeId->value()));
+                               op.replyCs = lss::CONFIGURE_NODE_ID;
+                               op.label = tr("set node-ID %1").arg(lssNodeId->value());
+                               lssQueue(op);
+                           }));
+    lssBitrate = new QComboBox(page);
+    for (int i = 0; i < 9; i++)
+        if (lss::tableBitrate(i))
+            lssBitrate->addItem(QString("%1 kbit/s").arg(lss::tableBitrate(i) / 1000), i);
+    lssBitrate->setCurrentIndex(3);
+    row3->addSpacing(16);
+    row3->addWidget(lssBitrate);
+    row3->addWidget(button(tr("Set bit timing"), tr("Configure bit timing (CiA 305 table 0)"), [this]() {
+        LssOp op;
+        op.frame = lss::configureBitTiming(quint8(lssBitrate->currentData().toInt()));
+        op.replyCs = lss::CONFIGURE_BIT_TIMING;
+        op.label = tr("set bit timing %1").arg(lssBitrate->currentText());
+        lssQueue(op);
+    }));
+    lssDelay = new QSpinBox(page);
+    lssDelay->setRange(0, 65535);
+    lssDelay->setValue(1000);
+    lssDelay->setSuffix(" ms");
+    row3->addWidget(lssDelay);
+    row3->addWidget(button(tr("Activate bit timing"), tr("All nodes in configuration state switch after the delay; switch this bus too"),
+                           [this]() {
+                               LssOp op;
+                               op.frame = lss::activateBitTiming(quint16(lssDelay->value()));
+                               op.label = tr("activate bit timing after %1 ms").arg(lssDelay->value());
+                               lssQueue(op);
+                           }));
+    row3->addWidget(button(tr("Store"), tr("Store configuration (node-ID, bit timing) in the node"), [this]() {
+        LssOp op;
+        op.frame = lss::store();
+        op.replyCs = lss::STORE;
+        op.label = tr("store configuration");
+        lssQueue(op);
+    }));
+    row3->addStretch(1);
+
+    lssStatus = new QLabel(tr("LSS (CiA 305): find nodes without node-ID, set node-ID and bit rate. Typical: Fastscan, "
+                              "Set node-ID, Store, All: waiting."), page);
+    lssStatus->setWordWrap(true);
+    lssStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+
+    QVBoxLayout *l = new QVBoxLayout(page);
+    l->addLayout(row1);
+    l->addLayout(row2);
+    l->addLayout(row3);
+    l->addWidget(lssStatus);
+    l->addStretch(1);
+    return page;
+}
+
+void CANopenWindow::lssQueue(const LssOp &op)
+{
+    lssOps.append(op);
+    lssNext();
+}
+
+void CANopenWindow::lssNext()
+{
+    if (lssActive || lssFastscan || lssOps.isEmpty())
+        return;
+    lssOp = lssOps.takeFirst();
+    sendFrame8(canopen::lss::MASTER_COB, lssOp.frame);
+    if (lssOp.replyCs)
+    {
+        lssActive = true;
+        lssTimer.start(lssOp.timeoutMs);
+    }
+    else
+    {
+        log(tr("LSS %1 sent").arg(lssOp.label));
+        lssStatus->setText(tr("%1 sent").arg(lssOp.label));
+        QTimer::singleShot(20, this, [this]() { lssNext(); });   /* spaced, no answer to wait for */
+    }
+}
+
+void CANopenWindow::lssReply(const QByteArray &d)
+{
+    using namespace canopen;
+    quint8 cs = quint8(d[0]);
+    if (lssFastscan)
+    {
+        if (cs == lss::IDENTIFY_SLAVE && lssTimer.isActive())
+        {
+            lssTimer.stop();
+            fastscan.answer(true);
+            fastscanStep();
+        }
+        return;
+    }
+    if (!lssActive || cs != lssOp.replyCs)
+        return;
+    lssTimer.stop();
+    lssActive = false;
+    QString result;
+    quint8 b1 = d.size() > 1 ? quint8(d[1]) : 0;
+    switch (cs)
+    {
+    case lss::SWITCH_SELECTIVE_RESPONSE: result = tr("node selected, in configuration state"); break;
+    case lss::CONFIGURE_NODE_ID:
+    case lss::CONFIGURE_BIT_TIMING:
+    case lss::STORE: result = QString::fromStdString(lss::errorText(cs, b1)); break;
+    case lss::NON_CONFIGURED_RESPONSE: result = tr("at least one node without node-ID is present"); break;
+    case lss::INQUIRE_NODE_ID: result = b1 == 0xFF ? tr("node-ID: none (FFh)") : tr("node-ID: %1").arg(b1); break;
+    default:
+        if (cs >= lss::INQUIRE_VENDOR && cs <= lss::INQUIRE_SERIAL && d.size() >= 5)
+        {
+            quint32 v = le32(d, 1);
+            lssId[cs - lss::INQUIRE_VENDOR]->setText(hex(v, 8));
+            const char *names[4] = { "vendor", "product", "revision", "serial" };
+            result = QString("%1 %2").arg(names[cs - lss::INQUIRE_VENDOR]).arg(hex(v, 8));
+        }
+    }
+    log(tr("LSS %1: %2").arg(lssOp.label, result));
+    lssStatus->setText(tr("%1: %2").arg(lssOp.label, result));
+    lssNext();
+}
+
+void CANopenWindow::lssTimeout()
+{
+    if (lssFastscan)
+    {
+        fastscan.answer(false);
+        fastscanStep();
+        return;
+    }
+    if (!lssActive)
+        return;
+    lssActive = false;
+    QString result = lssOp.replyCs == canopen::lss::NON_CONFIGURED_RESPONSE ? tr("no node without node-ID answered")
+                                                                             : tr("no answer (is a node in configuration state?)");
+    log(tr("LSS %1: %2").arg(lssOp.label, result));
+    lssStatus->setText(tr("%1: %2").arg(lssOp.label, result));
+    lssNext();
+}
+
+void CANopenWindow::fastscanStep()
+{
+    using namespace canopen;
+    if (fastscan.finished())
+    {
+        lssFastscan = false;
+        QString result;
+        if (fastscan.phase == lss::Fastscan::Found)
+        {
+            for (int i = 0; i < 4; i++)
+                lssId[i]->setText(hex(fastscan.id[i], 8));
+            result = tr("found vendor %1 product %2 revision %3 serial %4; it is in configuration state now, set its node-ID")
+                         .arg(hex(fastscan.id[0], 8), hex(fastscan.id[1], 8), hex(fastscan.id[2], 8), hex(fastscan.id[3], 8));
+        }
+        else if (fastscan.phase == lss::Fastscan::NoneFound)
+            result = tr("no node without node-ID answered");
+        else
+            result = tr("the node stopped answering during the scan");
+        log(tr("LSS fastscan: %1 (%2 requests)").arg(result).arg(fastscan.requests));
+        lssStatus->setText(tr("fastscan: %1").arg(result));
+        lssNext();
+        return;
+    }
+    fastscan.requests++;
+    sendFrame8(lss::MASTER_COB, fastscan.next());
+    lssTimer.start(100);                     /* no answer within this time: the bit is 1 */
+    if (fastscan.requests % 10 == 0)
+        lssStatus->setText(tr("fastscan running, %1 requests...").arg(fastscan.requests));
 }

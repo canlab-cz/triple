@@ -15,7 +15,7 @@ jobs:
         run: make -C tests/codec test
       - name: Python codec test
         run: python3 tools/test_triple_proto.py
-      - name: SavvyCAN helper tests (identifier calculator, PP2CAN log format, CANopen EDS and PDO decoding, print layout, RE analysis, AI tools and limits)
+      - name: SavvyCAN helper tests (identifier calculator, PP2CAN log format, CANopen EDS and PDO decoding, print layout, RE analysis, AI tools and limits, SDO block transfer and LSS)
         run: make -C tests/gui test
 
   kernel-matrix:

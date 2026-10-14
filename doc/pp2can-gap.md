@@ -65,7 +65,7 @@ or missing details, **no** = not available.
 
 | PP2CAN | SavvyCAN | Status | Notes |
 |---|---|---|---|
-| CANopen tools, CANopen Safety, CANopen FD, dictionary | CANopen window (added): NMT, heartbeat / EMCY monitor, SDO client, SYNC, PDO decoding from EDS / DCF or the node's mapping | partial | No Safety / FD specifics, no SDO block transfer or LSS |
+| CANopen tools, CANopen Safety, CANopen FD, dictionary | CANopen window (added): NMT, heartbeat / EMCY monitor, SDO client, SYNC, PDO decoding from EDS / DCF or the node's mapping | partial | SDO block transfer and LSS included; no Safety / FD specifics |
 | Scripting | JavaScript (QJSEngine) Scripting Interface | yes | Different language than PP2CAN scripts |
 | Plugins | none, but open source | partial | New windows are added in C++ |
 | Listen only | per bus in the connection window | yes | |
@@ -81,9 +81,9 @@ Ranked by value for CANLAB users and by how much is unblocked today.
 1. ~~Bus statistics window.~~ Done 2026-10-14: RE Tools > Bus
    Statistics (`gui/savvycan/re/busstatswindow.*`).
 2. **CANopen basics.** Done 2026-10-14: RE Tools > CANopen with NMT,
-   node monitor, EMCY, SYNC, an SDO client and PDO decoding from an EDS /
-   DCF file or the node's own mapping (`gui/savvycan/re/canopenwindow.*`).
-   Later: SDO block transfer, LSS.
+   node monitor, EMCY, SYNC, an SDO client with block transfer, PDO decoding
+   from an EDS / DCF file or the node's own mapping, and LSS with fastscan
+   (`gui/savvycan/re/canopenwindow.*`).
 3. ~~Response meter~~, 4. ~~Data / bit / ASCII sender~~, 5. ~~CAN
    calculator~~: done 2026-10-14, plus PP2CAN log files in Playback (the
    file sender) and File > Save Log as PP2CAN.

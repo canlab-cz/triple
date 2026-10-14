@@ -8,7 +8,8 @@
  * boot-up and EMCY messages, NMT master commands, SYNC, and an SDO client
  * (expedited and segmented upload/download) with readable abort codes,
  * and live PDO decoding with the mapping taken from an EDS/DCF file or
- * read from the node over SDO. Works with any SavvyCAN connection.
+ * read from the node over SDO; SDO block transfer with fallback, and LSS
+ * (CiA 305) including fastscan. Works with any SavvyCAN connection.
  */
 
 #include <QWidget>
@@ -19,10 +20,12 @@
 #include <QByteArray>
 #include <QHash>
 #include <QVector>
+#include <memory>
 #include <vector>
 
 #include "can_structs.h"
 #include "canopen_eds.h"
+#include "canopen_block.h"
 
 class QTableWidget;
 class QSpinBox;
@@ -57,6 +60,9 @@ private slots:
     void loadEdsClicked();
     void readMappingClicked();
     void refreshPdos();
+    void writeFileClicked();
+    void saveReadClicked();
+    void lssTimeout();
 
 private:
     enum ValueType { T_U8, T_U16, T_U32, T_I8, T_I16, T_I32, T_STRING, T_HEX };
@@ -85,6 +91,18 @@ private:
         PdoStep    pdoStep = PDO_NONE;
         bool       pdoTx = true;
         int        pdoNum = 0;        /* 1-based PDO number */
+        bool       block = false;     /* SDO block transfer, falls back to normal SDO */
+        std::shared_ptr<canopen::BlockUpload>   blockUp;
+        std::shared_ptr<canopen::BlockDownload> blockDown;
+    };
+
+    /* one LSS request; replyCs 0 = no answer expected */
+    struct LssOp {
+        canopen::Frame8 frame;
+        quint8  replyCs = 0;
+        int     timeoutMs = 300;
+        QString label;
+        int     part = -1;            /* inquire identity: which field to fill */
     };
 
     struct PendingPdo {               /* mapping being read from the node */
@@ -117,6 +135,13 @@ private:
     static QString stateText(int state);
 
     bool loadEds(const QString &path);
+    void sendFrame8(quint32 id, const canopen::Frame8 &f);
+    void handleBlockResponse(const QByteArray &d);
+    QWidget *buildLssPage();
+    void lssQueue(const LssOp &op);
+    void lssNext();
+    void lssReply(const QByteArray &d);
+    void fastscanStep();
     void rebuildPdosFromEds();
     void setPdos(const std::vector<canopen::Pdo> &list, const QString &source);
     void handlePdoJob(bool ok);
@@ -151,6 +176,25 @@ private:
     QString         nodeSource;            /* "read from node 5: ..." */
     bool            mappingTimeout = false;
     QTimer          pdoTimer;
+
+    /* SDO block transfer, last read data */
+    class QCheckBox *blockCheck;
+    QByteArray      lastRead;
+    QString         lastReadName;
+
+    /* LSS */
+    QLineEdit      *lssId[4];         /* vendor, product, revision, serial (hex) */
+    QSpinBox       *lssNodeId;
+    QComboBox      *lssBitrate;
+    QSpinBox       *lssDelay;
+    QLabel         *lssStatus;
+    QList<LssOp>    lssOps;
+    LssOp           lssOp;
+    bool            lssActive = false;
+    bool            lssFastscan = false;
+    canopen::lss::Fastscan fastscan;
+    bool            fastscanAnswered = false;
+    QTimer          lssTimer;
 
     QMap<int, Node> nodes;
     QList<SdoJob>   queue;

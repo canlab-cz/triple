@@ -37,6 +37,13 @@ What the connection provides:
 
 ![CANopen PDOs tab](../../doc/img/savvycan-canopen-pdo.png)
 
+  The SDO client also does block transfers (tick "Block transfer"; it
+  falls back to normal SDO if the node does not support them), writes
+  files to objects and saves what it read. The LSS tab finds nodes without
+  a node-ID (fastscan), sets node-ID and bit rate and stores them.
+
+![CANopen LSS: fastscan, node-ID set, node boots](../../doc/img/savvycan-canopen-lss.png)
+
 * PP2CAN tools:
   * **PP2CAN log files**: File > Load Log File (autodetected) and the
     Playback window read PP2CAN `.log` captures, so Playback works as
@@ -62,6 +69,8 @@ To try it without a CANopen device, run the simulated node from
 `tools/canopen_sim.py` on a Linux SocketCAN interface on the same bus:
 `python3 tools/canopen_sim.py can0 --node 5`. Its EDS is
 `tools/canopen_sim.eds`; press Start (NMT) to make it send PDOs.
+`--node 255 --serial 1234567` starts a second node without node-ID for
+LSS, `--no-block` a node without block transfer.
 
 ## Reverse engineering
 

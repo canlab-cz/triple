@@ -2,7 +2,7 @@
 
 Status: prepared locally, **not opened**. Branch `usb2can-triple` in the
 WSL checkout `/home/pavel/SavvyCAN`, on top of upstream master `e439670`,
-has nine commits:
+has ten commits:
 
 | Commit | Content |
 |---|---|
@@ -15,6 +15,7 @@ has nine commits:
 | `3a41e68` | Triple: zero padding for CAN FD lengths between DLC steps |
 | `a5f04bf` | Triple: CAN3 bitrate pairs outside the firmware table as raw timing |
 | `6ffd6aa` | Add Signal Finder and AI Assistant windows (reverse engineering; can be left out or split) |
+| `24d6c0b` | CANopen window: SDO block transfer and LSS |
 
 They can go in one PR or as separate ones; only the first commit is
 specific to the Triple, the tool windows and the PP2CAN log format work

@@ -22,10 +22,17 @@ Behaviour:
       TPDO2 0x280+node on every SYNC: 6401:02 analogue input 2 (i16),
             2002:00 SYNC counter (u32)
       RPDO1 0x200+node: 6200:01 digital outputs (u8)
+  * SDO block upload and download with CRC (unless --no-block); 1F50:01 is
+    a 1000-byte domain for testing them, writable with any length
+  * LSS slave (CiA 305) on 7E5h/7E4h: switch global and selective, configure
+    node-ID and bit timing, store, inquire identity and node-ID, identify
+    non-configured, fastscan. --node 255 starts without node-ID: silent
+    until LSS gives it one, then it boots with it
   * the matching electronic data sheet is tools/canopen_sim.eds
 """
 import math
 import argparse
+import errno
 import socket
 import struct
 import time
@@ -42,9 +49,17 @@ ABORT_LENGTH = 0x06070010
 
 
 class Node:
-    def __init__(self, sock, node_id):
+    def __init__(self, sock, node_id, serial=2604002, block=True):
         self.sock = sock
-        self.id = node_id
+        self.serial = serial
+        self.block_supported = block
+        self.id = node_id                # 0xFF: not configured, waits for LSS
+        self.pending_id = node_id        # node-ID set by LSS, active after reset communication
+        self.lss_config = False          # LSS configuration state
+        self.lss_selective = 0           # how many identity parts of a selective switch matched
+        self.lss_pos = 0                 # fastscan position (0 vendor .. 3 serial)
+        self.lss_bitrate = None          # bit timing table index set by LSS
+        self.blk = None                  # active SDO block transfer
         self.state = 0x7F
         self.od = {}
         self.ro = set()
@@ -65,10 +80,13 @@ class Node:
             (0x1018, 1): struct.pack("<I", 0x000004D8),
             (0x1018, 2): struct.pack("<I", 0x0000F0D7),
             (0x1018, 3): struct.pack("<I", 0x00010002),
-            (0x1018, 4): struct.pack("<I", 2604002),
+            (0x1018, 4): struct.pack("<I", self.serial),
             (0x2000, 0): b"\x00",
             (0x2001, 0): b"hello",
             (0x2002, 0): struct.pack("<I", 0),
+            # a domain for block transfers, any length can be written
+            (0x1F50, 0): b"\x01",
+            (0x1F50, 1): bytes((i * 7 + 3) & 0xFF for i in range(1000)),
             (0x1005, 0): struct.pack("<I", 0x80),
             # RPDO1
             (0x1400, 0): b"\x02",
@@ -110,7 +128,15 @@ class Node:
 
     # -- transport --------------------------------------------------------
     def send(self, can_id, data=b""):
-        self.sock.send(struct.pack(FMT, can_id, len(data), data.ljust(8, b"\x00")))
+        frame = struct.pack(FMT, can_id, len(data), data.ljust(8, b"\x00"))
+        for _ in range(1000):            # a block of up to 127 segments overruns the interface queue
+            try:
+                return self.sock.send(frame)
+            except OSError as e:
+                if e.errno != errno.ENOBUFS:
+                    raise
+                time.sleep(0.001)
+        print("transmit queue stuck, frame %03X dropped" % can_id)
 
     def sdo_reply(self, data):
         self.send(0x580 + self.id, data.ljust(8, b"\x00"))
@@ -121,6 +147,9 @@ class Node:
         print("  SDO abort %04X:%02X %08X" % (index, sub, code))
 
     def bootup(self):
+        if self.id == 0xFF:
+            print("not configured: waiting for LSS (no boot-up, no heartbeat)")
+            return
         self.state = 0x7F
         self.send(0x700 + self.id, b"\x00")
         self.next_hb = time.monotonic() + self.hb_period()
@@ -131,6 +160,8 @@ class Node:
         return ms / 1000.0 if ms else None
 
     def tick(self):
+        if self.id == 0xFF:
+            return
         now = time.monotonic()
         p = self.hb_period()
         if p and now >= self.next_hb:
@@ -163,6 +194,10 @@ class Node:
 
     # -- protocol ---------------------------------------------------------
     def on_frame(self, can_id, data):
+        if can_id == 0x7E5 and len(data) == 8:
+            return self.on_lss(data)
+        if self.id == 0xFF:
+            return                                             # only LSS until configured
         if can_id == 0x000 and len(data) >= 2 and data[1] in (0, self.id):
             cmd = data[0]
             if cmd in NMT_STATES:
@@ -175,6 +210,7 @@ class Node:
                 self.bootup()
             elif cmd == 0x82:
                 print("NMT reset communication")
+                self.apply_pending_id()
                 self.bootup()
         elif can_id == 0x080 and self.state == 0x05:           # SYNC
             counter = struct.unpack("<I", self.od[(0x2002, 0)])[0] + 1
@@ -194,7 +230,17 @@ class Node:
         ccs = cs >> 5
         if cs == 0x80:
             self.sdo = None
+            self.blk = None
             return
+        if self.blk and self.blk["mode"] == "down":     # block download segments: any first byte
+            return self.block_download_segment(d)
+        if ccs in (5, 6) and not self.block_supported:
+            index, sub = struct.unpack_from("<HB", d, 1)
+            return self.abort(index, sub, ABORT_CMD)
+        if ccs == 5:
+            return self.block_upload(d)
+        if ccs == 6:
+            return self.block_download(d)
         if ccs == 2:                       # initiate upload
             index, sub = struct.unpack_from("<HB", d, 1)
             key = (index, sub)
@@ -253,10 +299,183 @@ class Node:
         else:
             self.abort(0, 0, ABORT_CMD)
 
+    # -- SDO block transfer (CiA 301) ---------------------------------------
+    def block_upload(self, d):
+        cs = d[0] & 0x03
+        if cs == 0:                                        # initiate
+            index, sub = struct.unpack_from("<HB", d, 1)
+            if (index, sub) not in self.od:
+                return self.abort(index, sub, ABORT_NO_OBJECT)
+            blksize = d[4]
+            if not 1 <= blksize <= 127:
+                return self.abort(index, sub, 0x05040002)
+            val = self.od[(index, sub)]
+            self.blk = {"mode": "up", "index": index, "sub": sub, "data": val, "pos": 0, "blksize": blksize,
+                        "crc": bool(d[0] & 0x04), "start": 0, "last_sent": False}
+            print("  SDO block read %04X:%02X, %d bytes, block size %d" % (index, sub, len(val), blksize))
+            self.sdo_reply(struct.pack("<BHBI", 0xC0 | 0x04 | 0x02, index, sub, len(val)))
+        elif cs == 3 and self.blk and self.blk["mode"] == "up":   # start upload
+            self.send_upload_block()
+        elif cs == 2 and self.blk and self.blk["mode"] == "up":   # block acknowledged
+            b = self.blk
+            b["pos"] = min(b["start"] + d[1] * 7, len(b["data"]))
+            b["blksize"] = d[2] or b["blksize"]
+            if b["last_sent"] and b["pos"] >= len(b["data"]):
+                in_last = (len(b["data"]) - 1) % 7 + 1 if b["data"] else 0
+                crc = crc16(b["data"]) if b["crc"] else 0
+                self.sdo_reply(struct.pack("<BH", 0xC1 | ((7 - in_last) << 2), crc))
+                b["mode"] = "up-end"
+            else:
+                if d[1] * 7 < b["sent_bytes"]:
+                    print("  block: %d segments acknowledged of %d, sending again" % (d[1], b["sent_segs"]))
+                self.send_upload_block()
+        elif cs == 1 and self.blk and self.blk["mode"] == "up-end":   # end confirmed
+            print("  SDO block read done")
+            self.blk = None
+        else:
+            self.abort(0, 0, ABORT_CMD)
+
+    def send_upload_block(self):
+        b = self.blk
+        b["start"] = b["pos"]
+        b["last_sent"] = False
+        b["sent_bytes"] = 0
+        b["sent_segs"] = 0
+        for seq in range(1, b["blksize"] + 1):
+            chunk = b["data"][b["pos"]:b["pos"] + 7]
+            b["pos"] += len(chunk)
+            last = b["pos"] >= len(b["data"])
+            self.send(0x580 + self.id, (bytes([(0x80 if last else 0) | seq]) + chunk).ljust(8, b"\x00"))
+            b["sent_bytes"] += 7
+            b["sent_segs"] = seq
+            if last:
+                b["last_sent"] = True
+                break
+
+    def block_download(self, d):
+        if d[0] & 0x01 == 0:                               # initiate
+            index, sub = struct.unpack_from("<HB", d, 1)
+            if (index, sub) not in self.od:
+                return self.abort(index, sub, ABORT_NO_OBJECT)
+            if (index, sub) in self.ro:
+                return self.abort(index, sub, ABORT_READ_ONLY)
+            size = struct.unpack_from("<I", d, 4)[0] if d[0] & 0x02 else None
+            self.blk = {"mode": "down", "index": index, "sub": sub, "data": b"", "expect": 1, "blksize": 32,
+                        "crc": bool(d[0] & 0x04), "size": size, "last": False}
+            print("  SDO block write %04X:%02X, %s bytes" % (index, sub, size))
+            self.sdo_reply(struct.pack("<BHBB", 0xA0 | 0x04, index, sub, 32))
+        elif self.blk and self.blk["mode"] == "down-end":  # end download
+            b = self.blk
+            unused = (d[0] >> 2) & 7
+            data = b["data"][:len(b["data"]) - unused] if unused else b["data"]
+            crc = struct.unpack_from("<H", d, 1)[0]
+            self.blk = None
+            if b["crc"] and crc != crc16(data):
+                return self.abort(b["index"], b["sub"], 0x05040004)
+            if b["size"] is not None and len(data) != b["size"]:
+                return self.abort(b["index"], b["sub"], ABORT_LENGTH)
+            self.store(b["index"], b["sub"], data)
+            self.sdo_reply(b"\xA1")
+        else:
+            self.abort(0, 0, ABORT_CMD)
+
+    def block_download_segment(self, d):
+        b = self.blk
+        seq, last = d[0] & 0x7F, bool(d[0] & 0x80)
+        if seq == b["expect"]:
+            b["data"] += bytes(d[1:8])
+            b["expect"] += 1
+            if last:
+                b["last"] = True
+        if seq == b["blksize"] or last:
+            self.sdo_reply(bytes([0xA2, b["expect"] - 1, b["blksize"]]))
+            b["expect"] = 1
+            if b["last"]:
+                b["mode"] = "down-end"
+
+    # -- LSS slave (CiA 305) -----------------------------------------------
+    def identity(self):
+        return [struct.unpack("<I", self.od[(0x1018, i)])[0] for i in range(1, 5)]
+
+    def lss_reply(self, data):
+        self.send(0x7E4, data.ljust(8, b"\x00"))
+
+    def apply_pending_id(self):
+        if self.pending_id != self.id:
+            print("LSS: node-ID %d -> %d" % (self.id, self.pending_id))
+            self.id = self.pending_id
+            self.reset_od()                                # PDO COB-IDs follow the node-ID
+
+    def on_lss(self, d):
+        cs = d[0]
+        if cs == 0x04:                                     # switch state global
+            if d[1] == 1:
+                self.lss_config = True
+                print("LSS: configuration state")
+            else:
+                self.lss_config = False
+                self.lss_selective = 0
+                print("LSS: waiting state")
+                if self.id == 0xFF and self.pending_id != 0xFF:   # first node-ID: start up with it
+                    self.apply_pending_id()
+                    self.bootup()
+        elif 0x40 <= cs <= 0x43:                           # switch state selective
+            part = cs - 0x40
+            value = struct.unpack_from("<I", d, 1)[0]
+            if part == self.lss_selective and value == self.identity()[part]:
+                self.lss_selective += 1
+                if self.lss_selective == 4:
+                    self.lss_selective = 0
+                    self.lss_config = True
+                    print("LSS: selected, configuration state")
+                    self.lss_reply(b"\x44")
+            else:
+                self.lss_selective = 0
+        elif cs == 0x11 and self.lss_config:               # configure node-ID
+            nid = d[1]
+            ok = 1 <= nid <= 127 or nid == 0xFF
+            if ok:
+                self.pending_id = nid
+                print("LSS: node-ID %d pending" % nid)
+            self.lss_reply(bytes([0x11, 0 if ok else 1, 0]))
+        elif cs == 0x13 and self.lss_config:               # configure bit timing
+            ok = d[1] == 0 and d[2] in (0, 1, 2, 3, 4, 6, 7, 8)
+            if ok:
+                self.lss_bitrate = d[2]
+            self.lss_reply(bytes([0x13, 0 if ok else 1, 0]))
+        elif cs == 0x15 and self.lss_config:               # activate bit timing: no answer
+            print("LSS: would switch to bit timing index %s after %d ms (the simulator keeps the bus rate)"
+                  % (self.lss_bitrate, struct.unpack_from("<H", d, 1)[0]))
+        elif cs == 0x17 and self.lss_config:               # store configuration
+            print("LSS: configuration stored (node-ID %d, bit timing %s)" % (self.pending_id, self.lss_bitrate))
+            self.lss_reply(bytes([0x17, 0, 0]))
+        elif 0x5A <= cs <= 0x5D and self.lss_config:       # inquire identity
+            self.lss_reply(bytes([cs]) + struct.pack("<I", self.identity()[cs - 0x5A]))
+        elif cs == 0x5E and self.lss_config:               # inquire node-ID
+            self.lss_reply(bytes([0x5E, self.id]))
+        elif cs == 0x4C and self.id == 0xFF:               # identify non-configured slave
+            self.lss_reply(b"\x50")
+        elif cs == 0x51 and self.id == 0xFF and not self.lss_config:   # fastscan
+            idn, bit, sub, nxt = struct.unpack_from("<IBBB", d, 1)
+            if bit == 0x80:
+                self.lss_pos = 0
+                return self.lss_reply(b"\x4F")
+            if sub != self.lss_pos or bit > 31:
+                return
+            mask = 0xFFFFFFFF if bit == 0 else (0xFFFFFFFF << bit) & 0xFFFFFFFF
+            if (self.identity()[sub] ^ idn) & mask:
+                return
+            if bit == 0:
+                if nxt < sub:
+                    self.lss_config = True
+                    print("LSS: found by fastscan, configuration state")
+                self.lss_pos = nxt
+            self.lss_reply(b"\x4F")
+
     def store(self, index, sub, val):
         key = (index, sub)
         old = self.od[key]
-        if index != 0x2001 and len(val) != len(old):
+        if index not in (0x2001, 0x1F50) and len(val) != len(old):
             return self.abort(index, sub, ABORT_LENGTH)
         self.od[key] = bytes(val)
         print("  SDO write %04X:%02X <- %s" % (index, sub, bytes(val).hex()))
@@ -273,17 +492,28 @@ class Node:
                 print("  EMCY error reset sent")
 
 
+def crc16(data, crc=0):
+    """CRC of SDO block transfers: CCITT 0x1021, initial 0 (XMODEM)."""
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("iface")
-    ap.add_argument("--node", type=int, default=5)
+    ap.add_argument("--node", type=int, default=5, help="node-ID, 255 = not configured (waits for LSS)")
     ap.add_argument("--seconds", type=float, default=0, help="stop after this many seconds")
+    ap.add_argument("--serial", type=int, default=2604002, help="serial number in 1018:04 (LSS identity)")
+    ap.add_argument("--no-block", action="store_true", help="refuse SDO block transfers (tests the fallback)")
     args = ap.parse_args()
 
     sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
     sock.bind((args.iface,))
     sock.settimeout(0.05)
-    node = Node(sock, args.node)
+    node = Node(sock, args.node, args.serial, not args.no_block)
     node.bootup()
     end = time.monotonic() + args.seconds if args.seconds else None
     while end is None or time.monotonic() < end:
