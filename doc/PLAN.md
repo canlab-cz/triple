@@ -68,13 +68,33 @@ Done 2026-10-14 (driver v1.4, daemon v1.1), not yet verified on hardware:
 
 ### Phase 2: rewrite as a modern CAN device driver (template: in-tree `drivers/net/can/slcan`)
 
-- `alloc_candev` / `register_candev` / `open_candev` / `free_candev`; `alloc_can_skb` / `alloc_canfd_skb`.
-- Bitrate, listen-only and FD via `can_priv` and netlink: `ip link set can0 type can bitrate 250000 [dbitrate ... fd on]`. The kernel sends the settings commands itself. Daemon reduces to `ldattach 29 /dev/ttyACM0` (or disappears).
-- Per-port TX state or a shared TX ring; echo-skb API for correct tx stats.
-- Enable timestamp mode; deliver `skb_hwtstamps`; report error counters / bus-off via `can_change_state`.
-- Drop pre-5.10 compatibility code.
-- udev rule + systemd unit for automatic attach on plug.
+Done 2026-10-14, driver v2.0 (`driver/triple.c`, `driver/triple_proto.c`), verified on two adapters:
+
+- [x] `alloc_candev` / `register_candev` / `open_candev` / `free_candev`, `alloc_can_skb` / `alloc_canfd_skb`, echo skbs with `IFF_ECHO` (tx counters exact).
+- [x] Bitrates and modes via netlink (`bitrate_const`, `data_bitrate_const`, `CAN_CTRLMODE_LISTENONLY | FD | FD_NON_ISO`); the driver sends the settings command in `ndo_open`. Invalid values are refused by the CAN core.
+- [x] Attach with `ldattach 29 /dev/ttyACMx`; the `tripled` daemon, `start.sh`, `end.sh` and the SysV scripts are gone. udev rule + systemd template unit in `etc/`, helper scripts in `scripts/`, `driver/dkms.conf`.
+- [x] Timestamp mode on by default: 32-bit microsecond counter after the flag byte, extended to 64 bit in the driver, delivered as `skb_hwtstamps` (`candump -H`). Measured 102 ms deltas for 100 ms spacing.
+- [x] Status message decoded: TEC/REC per port into `do_get_berr_counter`, state changes delivered as error frames via `can_change_state`, `can_bus_off` on the (unobserved) bus-off state byte. Firmware version logged at attach.
+- [x] Interfaces carry `dev_port` 0..2 for udev naming by connector.
+- [x] Builds on 5.15, 6.6 (WSL2), 6.8 and 7.2 (6.16 moved the FD parameters into `can_priv::fd`, 7.0 removed `can_change_mtu` and replaced `can_eth_ioctl_hwts` by `ndo_hwtstamp_get/set`).
+- [x] Simulated unplug (usbipd detach) with ports up: clean teardown, the adapter re-enumerates and can be re-attached.
+- [ ] User defined bit timing for port 3 (`TRIPLE_CMD_BITTIMING`, raw MCP2517FD values) through `bittiming_const` / `do_set_bittiming`.
+- [ ] Marker input (`0x87`) and the rest of the status payload (byte 21 changes under load, byte 27 looks like a slowly rising value, 0x10 .. 0x30).
 - Later option: native USB driver on the bulk endpoints (like `gs_usb`), which needs a `cdc_acm` ignore entry or udev unbind.
+
+Measured limits (firmware 1.41, WSL2 over usbipd, so USB latency is pessimistic):
+
+| Test (8-byte frames, 250 kbit/s unless noted) | Received |
+|---|---|
+| 2 x 2000 frames on two ports at once, 1 ms gap | 2000 / 2000 on both |
+| 1000 frames, 0.5 ms gap (2000 frames/s) | 1000 / 1000 |
+| 1000 frames, 0.2 ms gap (5000 frames/s) | 923 / 1000 |
+| 1000 frames, 0.13 ms gap (bus rate) | 768 / 1000 |
+| 1000 frames, zero gap | 385 / 1000 |
+| 1000 frames zero gap at 500 kbit/s | ~530 / 1000 |
+| 200 FD frames x 64 bytes, BRS 6.7 Mbit/s, zero gap | 200 / 200 |
+
+Same numbers with `hwtstamp=0`, so the message length is not the limit. The sending adapter puts everything on the bus; the *receiving* adapter's path toward USB saturates somewhere between 2000 and 5000 frames/s and the firmware drops silently once its buffer is full. During overload the receiver's status payload shows byte 14 rising to about 0xDC (buffer fill level, probably) and byte 21 counting; both are 0 at idle. v1.4 passed a 500-frame zero-gap burst only because it waited for each USB write completion, which throttled the sender below the receiver's limit by accident. All measured through usbipd-win into WSL2; native USB should do better.
 
 ### Phase 3: protocol documentation and shared codec
 

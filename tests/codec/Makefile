@@ -1,11 +1,10 @@
-# Host-side round-trip test of the Triple wire codec (driver/triple_parse.c).
-# The shim/ directory provides stand-ins for the few kernel headers the codec uses.
+# Host-side test of the Triple wire codec (driver/triple_proto.c).
 CC      ?= gcc
-CFLAGS  ?= -std=gnu99 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
+CFLAGS  ?= -std=gnu99 -Wall -Wextra -Wno-unused-parameter
 DRV     := ../../driver
 
-codec_test: codec_test.c $(DRV)/triple_parse.c $(DRV)/include/triple_helper.h $(DRV)/include/triple_parse.h
-	$(CC) $(CFLAGS) -I shim -I $(DRV)/include -o $@ codec_test.c $(DRV)/triple_parse.c
+codec_test: codec_test.c $(DRV)/triple_proto.c $(DRV)/include/triple_proto.h
+	$(CC) $(CFLAGS) -I $(DRV)/include -o $@ codec_test.c $(DRV)/triple_proto.c
 
 test: codec_test
 	./codec_test

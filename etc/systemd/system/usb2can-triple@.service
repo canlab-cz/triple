@@ -1,0 +1,17 @@
+# Attaches the usb2cansocketcan line discipline to one serial port.
+# Started by the udev rule for every USB2CAN Triple that is plugged in:
+#   usb2can-triple@ttyACM0.service
+# Install: cp usb2can-triple@.service /etc/systemd/system/ && systemctl daemon-reload
+[Unit]
+Description=USB2CAN Triple SocketCAN line discipline on /dev/%i
+BindsTo=dev-%i.device
+After=dev-%i.device
+
+[Service]
+Type=simple
+ExecStartPre=/sbin/modprobe usb2cansocketcan
+ExecStart=/usr/sbin/ldattach -d 29 /dev/%i
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

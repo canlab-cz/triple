@@ -1,0 +1,18 @@
+# CANLAB USB2CAN Triple: attach the SocketCAN line discipline when the
+# adapter's serial port appears, and give the CAN interfaces stable names.
+#
+# Install: cp 90-usb2can-triple.rules /etc/udev/rules.d/ && udevadm control --reload
+
+# 1. serial port appears -> start ldattach for it (see usb2can-triple@.service)
+ACTION=="add", SUBSYSTEM=="tty", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f0d7", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}+="usb2can-triple@%k.service"
+
+# 2. optional: name the three CAN interfaces after the adapter serial number
+#    and connector (dev_port 0..2 = CAN1..CAN3). Interface names are limited
+#    to 15 characters. Adjust or delete to taste.
+SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f0d7", \
+  ATTR{dev_port}=="0", NAME="tr$attr{../../../serial}c1"
+SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f0d7", \
+  ATTR{dev_port}=="1", NAME="tr$attr{../../../serial}c2"
+SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f0d7", \
+  ATTR{dev_port}=="2", NAME="tr$attr{../../../serial}c3"
