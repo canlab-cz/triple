@@ -83,9 +83,19 @@ exchanged with the adapter, the firmware version and the error counters.
 Defaults at connect: CAN1 250 kbit/s, CAN2 500 kbit/s, CAN3 FD 125 kbit/s
 nominal, 6.7 Mbit/s data, ISO.
 
-Verified on 2026-10-14 against the Linux kernel driver on a second adapter:
-frames on all three buses, FD, timestamps, with SavvyCAN running under
-WSLg.
+SavvyCAN's quick-send grid and frame sender read unprefixed numbers as
+decimal: type `0x7AB` and `0x11 0x22`, not `7AB` and `11 22`.
+
+Verified on 2026-10-14 against the Linux kernel driver on a second adapter,
+both with SavvyCAN master under WSLg and with the QT6WIP build on
+Windows 11: receive on all three buses including CAN FD with BRS, hardware
+timestamps, transmit from the frame grid.
+
+![SavvyCAN on Windows with a USB2CAN Triple](../../doc/img/savvycan-triple-windows.png)
+
+If an adapter was attached to WSL2 with usbipd and is handed back to
+Windows, Windows may not be able to open its port until it is physically
+replugged.
 
 ## Limits
 
