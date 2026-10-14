@@ -6,13 +6,18 @@
 #include <stdbool.h>
 #include <string.h>
 
-#define  TRIPLE_MTU                 128 //40
+/* Worst-case escaped frame: 1 + 2 + 2 + 8 + 2 + 2*64 + 1 = 144 bytes */
+#define  TRIPLE_MTU                 160
 #define  TRIPLE_MAGIC               0x739A//0x729B
+
+/* Line discipline number, must match the driver (driver/include/triple_helper.h).
+ * 29 is N_DEVELOPMENT on kernels >= 5.18. */
+#define  N_TRIPLE                   29
 
 #define  ID_LEN                     4
 #define  DATA_LEN                   8
 #define  DATA_FD_LEN                64
-#define  COM_BUF_LEN                100
+#define  COM_BUF_LEN                TRIPLE_MTU
 #define  DATA_LEN_ERR               12
 #define  TIME_CHAR_NUM              13
 
@@ -123,28 +128,27 @@ enum TDC_MOD {
   TDCMOD_AUTO,
 };
 
-inline static void escape_memcpy(void *dest, void *src, size_t n)
+/* Copy n escaped bytes from src to dest, dropping the escape markers.
+ * Returns the number of bytes written to dest (<= n). */
+inline static size_t escape_memcpy(void *dest, const void *src, size_t n)
 {
-  // Typecast src and dest addresses to (char *)
   bool escape = false;
-  int offset = 0;
-  char *csrc = (char *)src;
-  char *cdest = (char *)dest;
+  size_t out = 0;
+  size_t i;
+  const unsigned char *csrc = (const unsigned char *)src;
+  unsigned char *cdest = (unsigned char *)dest;
 
-  // Copy contents of src[] to dest[]
-  for (int i = 0; i < n; i++)
+  for (i = 0; i < n; i++)
   {
     if (csrc[i] == U2C_TR_SPEC_BYTE && !escape)
     {
       escape = true;
-      offset++;
+      continue;
     }
-    else
-    {
-      cdest[i - offset] = csrc[i];
-      escape = false;
-    }
+    cdest[out++] = csrc[i];
+    escape = false;
   }
+  return out;
 }
 
 inline static unsigned char USB2CAN_TRIPLE_PushByte(const unsigned char value, unsigned char *buffer)

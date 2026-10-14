@@ -37,13 +37,7 @@
 
 #include "version.h"
 #include "tripled_helper.h"
-/*
- * Before 3.1.0, the ldisc number is private define
- * in kernel, userspace application cannot use it.
- */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,1,0)
-#define N_TRIPLE (NR_LDISCS - 1)
-#endif
+/* N_TRIPLE comes from tripled_helper.h and must match the kernel module. */
 
 #define   DAEMON_NAME      "tripled"
 #define   TTYPATH_LENGTH   64
@@ -62,6 +56,8 @@ static void run_interactive ();
 static void print_bittiming();
 static void parse_bittiming();
 static void print_speed();
+static int split_tokens(char *s, char **out, int max);
+static void usage_error(const char *prg, const char *msg);
 
 
 /* v2.1: change some variable to global (for end process) */
@@ -85,7 +81,7 @@ int main (int argc, char *argv[])
   char            buf[IFNAMSIZ + 1];
   char const     *devprefix = "/dev/";
 
-  int             speed[3];
+  int             speed[3] = { SPEED_250k, SPEED_250k, CAN_250K_1M };
   char           *name[3];
   bool listen_only[3];
   unsigned int user_speed[11];
@@ -108,77 +104,64 @@ int main (int argc, char *argv[])
 
   while ((opt = getopt(argc, argv, "s:n:l:duvtwh?f:c:")) != -1)
   {
+    int n;
+
     switch (opt)
     {
-    case 's'://set speed
-      tmp[i] = strtok(optarg, ":");
-      while (tmp[i] != NULL)
-      {
-        tmp[++i] = strtok(NULL, ":");
-      }
+    case 's': /* bitrates: <port1>:<port2>:<port3 FD> as hex codes, see -t */
+      n = split_tokens(optarg, tmp, 3);
+      if (n != 3)
+        usage_error(argv[0], "-s needs three values, e.g. -s0x09:0x0A:0x0A (see -t)");
       speed[PORT_1] = look_up_can_speed(strtol(tmp[0], NULL, 16));
       speed[PORT_2] = look_up_can_speed(strtol(tmp[1], NULL, 16));
       speed[PORT_3] = look_up_can_fd_speed(strtol(tmp[2], NULL, 16));
       break;
-    case 'n'://set names
-      name[i] = strtok(optarg, ":");
-      while (name[i] != NULL)
-      {
-        name[++i] = strtok(NULL, ":");
-      }
+    case 'n': /* interface names */
+      n = split_tokens(optarg, name, 3);
+      if (n < 1)
+        usage_error(argv[0], "-n needs one to three names, e.g. -ncan0:can1:canfd2");
       break;
-    case 'l'://set listen-only
-      tmp[i] = strtok(optarg, ":");
-      while (tmp[i] != NULL)
-      {
-        tmp[++i] = strtok(NULL, ":");
-      }
+    case 'l': /* listen-only per port */
+      n = split_tokens(optarg, tmp, 3);
+      if (n != 3)
+        usage_error(argv[0], "-l needs three values, e.g. -l0:0:1");
       for (i = 0; i < 3; i++)
         listen_only[i] = (bool)atoi(tmp[i]);
-
       break;
-    case 'd'://run a deamon
+    case 'd': /* stay in foreground */
       run_as_daemon = 0;
       break;
-    case 'v':// print version
-      if (argc == 3)
-      {
-        print_version(argv[2]);
-      }
+    case 'v': /* print version */
+      print_version(argv[0]);
       break;
-    case 'f':// CAN FD on
+    case 'f': /* CAN FD options on port 3: <ESI>:<ISO CRC> */
       can_fd = true;
-      tmp[i] = strtok(optarg, ":");
-      while (tmp[i] != NULL)
-      {
-        tmp[++i] = strtok(NULL, ":");
-      }
-      esi = (bool)(atoi(tmp[0]));
-      iso_crc = (bool)(atoi(tmp[1]));
+      n = split_tokens(optarg, tmp, 2);
+      if (n != 2)
+        usage_error(argv[0], "-f needs two values, e.g. -f0:1");
+      esi = (bool)atoi(tmp[0]);
+      iso_crc = (bool)atoi(tmp[1]);
       break;
-    case 'c':// User defined CAND FD bittiming
+    case 'c': /* user defined CAN FD bit timing */
       user_bittiming = true;
-      tmp[i] = strtok(optarg, ":");
-      while (tmp[i] != NULL)
-      {
-        tmp[++i] = strtok(NULL, ":");
-      }
+      n = split_tokens(optarg, tmp, 11);
+      if (n != 11)
+        usage_error(argv[0], "-c needs eleven values, see -u");
       for (i = 0; i < 11; i++)
         user_speed[i] = strtoul(tmp[i], NULL, 10);
       break;
     case 'u':
       print_bittiming();
       break;
-    case 't':// print Speeds
+    case 't': /* print speeds */
       print_speed();
       break;
-    case 'h'://help
+    case 'h': /* help */
     case '?':
     default:
       print_usage(argv[0]);
       break;
     }
-    i=0;
   }
 
   /* Initialize the logging interface */
@@ -360,21 +343,31 @@ int main (int argc, char *argv[])
 
 static void print_version (char *prg)
 {
-  int          com_port;
-  char        *pch;
-  char const  *devprefix = "/dev/";
-
-  pch = strstr(prg, devprefix);
-  if (pch != prg)
-  {
-    snprintf(ttypath, TTYPATH_LENGTH, "%s%s", devprefix, prg);
-  }
-  else
-  {
-    snprintf(ttypath, TTYPATH_LENGTH, "%s", prg);
-  }
+  fprintf(stderr, "%s %s (line discipline %d)\n", DAEMON_NAME, TRIPLE_DAEMON_UTILITY_VERSION, N_TRIPLE);
   exit(EXIT_SUCCESS);
+}
 
+/* Split "a:b:c" in place into at most max tokens.
+ * Returns the token count, or -1 when there are more than max tokens. */
+static int split_tokens(char *s, char **out, int max)
+{
+  int n = 0;
+  char *tok = strtok(s, ":");
+
+  while (tok != NULL)
+  {
+    if (n >= max)
+      return -1;
+    out[n++] = tok;
+    tok = strtok(NULL, ":");
+  }
+  return n;
+}
+
+static void usage_error(const char *prg, const char *msg)
+{
+  fprintf(stderr, "%s: %s\n", prg, msg);
+  exit(EXIT_FAILURE);
 }
 
 static void child_handler (int signum)

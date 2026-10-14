@@ -1,0 +1,24 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  codec-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host-side codec round-trip test
+        run: make -C tests/codec test
+
+  kernel-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [u2204, u2404, fedora]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile driver and daemon against ${{ matrix.target }} kernel headers
+        run: sh ci/kbuild/run.sh ${{ matrix.target }}

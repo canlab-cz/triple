@@ -49,6 +49,7 @@
 #include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/kobject.h>
+#include <linux/string.h>
 #include <linux/sysfs.h>
 #include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0)
@@ -59,11 +60,12 @@
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("TripleCAN interface driver");
 MODULE_ALIAS("USB2CAN Triple");
-MODULE_VERSION("v1.3");
+MODULE_VERSION("v1.4");
 MODULE_AUTHOR("Canlab");
+MODULE_ALIAS_LDISC(N_TRIPLE);
 
 /* global variables & define */
-#define N_TRIPLE (NR_LDISCS - 1)
+/* N_TRIPLE (= N_DEVELOPMENT, 29) is defined in triple_helper.h */
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
 /* pcan_netdev_register() use alloc_candev() instead of alloc_netdev() */
@@ -95,9 +97,25 @@ module_exit(triple_exit);
 /* driver layer - (2)  TTY line discipline */
 static int triple_open(struct tty_struct *tty);
 static void triple_close(struct tty_struct *tty);
-static int triple_hangup(struct tty_struct *tty);
+/* tty_ldisc_ops::hangup returns void since 5.16 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
+#define TRIPLE_HANGUP_RET    void
+#define TRIPLE_HANGUP_RETURN return
+#else
+#define TRIPLE_HANGUP_RET    int
+#define TRIPLE_HANGUP_RETURN return 0
+#endif
+static TRIPLE_HANGUP_RET triple_hangup(struct tty_struct *tty);
+/* tty_ldisc_ops::ioctl lost its struct file argument in 5.17 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
+static int triple_ioctl(struct tty_struct *tty, unsigned int cmd, unsigned long arg);
+#else
 static int triple_ioctl(struct tty_struct *tty, struct file *file, unsigned int cmd, unsigned long arg);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
+#endif
+/* tty_ldisc_ops::receive_buf: u8 pointers and size_t count since 6.6, const flags since 5.14 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+static void triple_receive_buf(struct tty_struct *tty, const u8 *cp, const u8 *fp, size_t count);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
 static void triple_receive_buf(struct tty_struct *tty, const unsigned char *cp, const char *fp, int count);
 #else
 static void triple_receive_buf(struct tty_struct *tty, const unsigned char *cp, char *fp, int count);
@@ -154,7 +172,7 @@ static int __init triple_init(void)
   if (maxdev < 6)
     maxdev = 6; /* Sanity */
 
-  printk(banner);
+  pr_info("%s", banner);
   printk(KERN_ERR "triple: %d interface channels.\n", maxdev);
 
   triple_devs = kzalloc(sizeof(struct net_device *) * maxdev, GFP_KERNEL);
@@ -263,7 +281,9 @@ static void __exit triple_exit(void)
 
 } /* END: triple_exit() */
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+static void triple_receive_buf(struct tty_struct *tty, const u8 *cp, const u8 *fp, size_t count)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
 static void triple_receive_buf(struct tty_struct *tty, const unsigned char *cp, const char *fp, int count)
 #else
 static void triple_receive_buf(struct tty_struct *tty, const unsigned char *cp, char *fp, int count)
@@ -414,10 +434,12 @@ static void triple_close(struct tty_struct *tty)
 
   USB2CAN_TRIPLE *adapter = (USB2CAN_TRIPLE *)tty->disc_data;
 
-  /* First make sure we're connected. */
-  /*if (!adapter || adapter->magic != TRIPLE_MAGIC || adapter->tty != tty)
+  /* First make sure we're connected: on a USB unplug the tty layer calls
+   * hangup (which lands here) and then close again, so the second call
+   * must be a no-op instead of dereferencing a NULL adapter. */
+  if (!adapter || adapter->magic != TRIPLE_MAGIC || adapter->tty != tty)
     return;
-  */
+
   spin_lock_bh(&adapter->lock);
   tty->disc_data = NULL;
   adapter->tty = NULL;
@@ -433,18 +455,22 @@ static void triple_close(struct tty_struct *tty)
 
 } /* END: triple_close() */
 
-static int triple_hangup(struct tty_struct *tty)
+static TRIPLE_HANGUP_RET triple_hangup(struct tty_struct *tty)
 {
   /*=======================================================*/
   print_func_trace(trace_func_main, __LINE__, __FUNCTION__);
   /*=======================================================*/
 
   triple_close(tty);
-  return 0;
+  TRIPLE_HANGUP_RETURN;
 
 } /* END: triple_hangup() */
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
+static int triple_ioctl(struct tty_struct *tty, unsigned int cmd, unsigned long arg)
+#else
 static int triple_ioctl(struct tty_struct *tty, struct file *file, unsigned int cmd, unsigned long arg)
+#endif
 {
   /*=======================================================*/
   print_func_trace(trace_func_main, __LINE__, __FUNCTION__);
@@ -462,22 +488,17 @@ static int triple_ioctl(struct tty_struct *tty, struct file *file, unsigned int 
   {
   case SIOCGIFNAME:
   {
+    /* Each call hands out the next of the three interface names. */
     if (adapter->gif_channel > 2)
-      return 0;
-
-    printk("gif_channel:%d\n", adapter->gif_channel);
+      return -ENODEV;
 
     channel = adapter->gif_channel;
-
     tmp = strlen(adapter->devs[channel]->name) + 1;
-    printk("actual name%s\n", adapter->devs[channel]->name);
-
-    printk("name%s\n", adapter->devs[channel]->name);
 
     if (copy_to_user((void __user *)arg, adapter->devs[channel]->name, tmp))
       return -EFAULT;
 
-    adapter->gif_channel = adapter->gif_channel + 1 % 3;
+    adapter->gif_channel++;
     return 0;
   }
 
@@ -485,7 +506,11 @@ static int triple_ioctl(struct tty_struct *tty, struct file *file, unsigned int 
     return -EINVAL;
 
   default:
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
+    return tty_mode_ioctl(tty, cmd, arg);
+#else
     return tty_mode_ioctl(tty, file, cmd, arg);
+#endif
   }
 
 } /* END: triple_ioctl() */
@@ -530,6 +555,8 @@ static int triple_netdev_close(struct net_device *dev)
   /*=======================================================*/
 
   int channel;
+  int i;
+  bool others_running = false;
   USB2CAN_TRIPLE *adapter = ((TRIPLE_PRIV *)netdev_priv(dev))->adapter;
 
   channel = (dev->base_addr & 0xF00) >> 8;
@@ -541,20 +568,21 @@ static int triple_netdev_close(struct net_device *dev)
 
   spin_lock_bh(&adapter->lock);
 
-  if (adapter->tty)
-  {
-    /* TTY discipline is running. */
-    if (!netif_running(adapter->devs[!channel]))
-      clear_bit(TTY_DO_WRITE_WAKEUP, &adapter->tty->flags);
-  }
+  for (i = 0; i < 3; i++)
+    if (adapter->devs[i] != dev && netif_running(adapter->devs[i]))
+      others_running = true;
+
+  if (adapter->tty && !others_running)
+    clear_bit(TTY_DO_WRITE_WAKEUP, &adapter->tty->flags);
 
   netif_stop_queue(dev);
 
-  if (!netif_running(adapter->devs[!channel]))
+  if (!others_running)
   {
-    /* another netdev is closed (down) too, reset TTY buffers. */
+    /* last port going down: reset TTY buffers. */
     adapter->rcount = 0;
     adapter->xleft = 0;
+    clear_bit(SLF_ESC, &adapter->flags);
   }
 
   spin_unlock_bh(&adapter->lock);
@@ -572,7 +600,7 @@ static netdev_tx_t triple_xmit(struct sk_buff *skb, struct net_device *dev)
   int channel;
   USB2CAN_TRIPLE *adapter = ((TRIPLE_PRIV *)netdev_priv(dev))->adapter;
 
-  if ((skb->len != sizeof(struct can_frame)) && (skb->len != sizeof(struct canfd_frame)))
+  if (skb->len != CAN_MTU && skb->len != CANFD_MTU)
     goto OUT;
 
   spin_lock(&adapter->lock);
@@ -600,20 +628,29 @@ static netdev_tx_t triple_xmit(struct sk_buff *skb, struct net_device *dev)
     goto OUT;
   }
 
+  /* Only port 3 speaks CAN FD. */
+  if (skb->len == CANFD_MTU && channel != 2)
+  {
+    spin_unlock(&adapter->lock);
+    dev->stats.tx_dropped++;
+    goto OUT;
+  }
+
+  /* One transmit buffer is shared by the three ports. If the previous
+   * frame has not fully drained to the tty yet, keep this skb queued;
+   * triple_transmit() wakes the queues once xleft reaches 0. */
+  if (adapter->xleft > 0)
+  {
+    netif_stop_queue(dev);
+    spin_unlock(&adapter->lock);
+    return NETDEV_TX_BUSY;
+  }
+
   netif_stop_queue(adapter->devs[0]);
   netif_stop_queue(adapter->devs[1]);
   netif_stop_queue(adapter->devs[2]);
 
-   int can_fd_channel = 2;
-
-  if ((channel == can_fd_channel)) // CAN_FD
-  {
-  triple_encaps_fd(adapter, 2, (struct canfd_frame *)skb->data); // sockatCAN frame -> Triple HW (ttyWrite)
-  }
-   else // CAN 2.0
-  {
-     triple_encaps(adapter, channel, (struct can_frame *)skb->data); // sockatCAN frame -> Triple HW (ttyWrite)
-  }
+  triple_encaps(adapter, channel, skb); /* SocketCAN frame -> Triple HW (tty write) */
 
   spin_unlock(&adapter->lock);
 
@@ -708,7 +745,7 @@ static int triple_alloc(dev_t line, USB2CAN_TRIPLE *adapter)
     return -1;
 
 #ifdef USES_ALLOC_CANDEV
-  strncpy(devs[0]->name, name, sizeof(devs[0]->name));
+  strscpy(devs[0]->name, name, sizeof(devs[0]->name));
 #endif /* USES_ALLOC_CANDEV */
   sprintf(name, "triplecan%d", id[1]);
 
@@ -728,7 +765,7 @@ static int triple_alloc(dev_t line, USB2CAN_TRIPLE *adapter)
     return -1;
   }
 #ifdef USES_ALLOC_CANDEV
-  strncpy(devs[1]->name, name, sizeof(devs[1]->name));
+  strscpy(devs[1]->name, name, sizeof(devs[1]->name));
 #endif /* USES_ALLOC_CANDEV */
 
   sprintf(name, "triplecan%d", id[2]);
@@ -770,7 +807,7 @@ static int triple_alloc(dev_t line, USB2CAN_TRIPLE *adapter)
     return -1;
   }
 #ifdef USES_ALLOC_CANDEV
-  strncpy(devs[2]->name, name, sizeof(devs[2]->name));
+  strscpy(devs[2]->name, name, sizeof(devs[2]->name));
 #endif /* USES_ALLOC_CANDEV */
 
   devs[0]->base_addr = id[0];

@@ -8,6 +8,6 @@
  */
 
 
-#define  TRIPLE_DAEMON_UTILITY_VERSION  "v1.0"
+#define  TRIPLE_DAEMON_UTILITY_VERSION  "v1.1"
 
 #endif

@@ -1,0 +1,2 @@
+FROM fedora:latest
+RUN dnf install -y gcc make kernel-devel elfutils-libelf-devel kmod && dnf clean all
