@@ -36,7 +36,7 @@ for f in ("triple_serial.h", "triple_serial.cpp"):
     shutil.copy(os.path.join(R, "gui", "savvycan", "connections", f), os.path.join(S, "connections", f))
 shutil.copy(os.path.join(R, "driver", "include", "triple_proto.h"), os.path.join(S, "connections", "triple_proto.h"))
 shutil.copy(os.path.join(R, "driver", "triple_proto.c"), os.path.join(S, "connections", "triple_proto.c"))
-for f in ("busstatswindow.h", "busstatswindow.cpp"):
+for f in ("busstatswindow.h", "busstatswindow.cpp", "canopenwindow.h", "canopenwindow.cpp"):
     shutil.copy(os.path.join(R, "gui", "savvycan", "re", f), os.path.join(S, "re", f))
 print("copied connection sources into", os.path.join(S, "connections"))
 
@@ -59,6 +59,10 @@ if os.path.exists(os.path.join(S, "CMakeLists.txt")):
           "    re/temporalgraphwindow.cpp re/temporalgraphwindow.h\n",
           "    re/temporalgraphwindow.cpp re/temporalgraphwindow.h\n"
           "    re/busstatswindow.cpp re/busstatswindow.h\n")
+    patch("CMakeLists.txt",
+          "    re/busstatswindow.cpp re/busstatswindow.h\n",
+          "    re/busstatswindow.cpp re/busstatswindow.h\n"
+          "    re/canopenwindow.cpp re/canopenwindow.h\n")
 
 patch("SavvyCAN.pro",
       "    re/temporalgraphwindow.cpp" + BS,
@@ -66,6 +70,12 @@ patch("SavvyCAN.pro",
 patch("SavvyCAN.pro",
       "    re/temporalgraphwindow.h" + BS,
       "    re/temporalgraphwindow.h" + BS + "    re/busstatswindow.h" + BS)
+patch("SavvyCAN.pro",
+      "    re/busstatswindow.cpp" + BS,
+      "    re/busstatswindow.cpp" + BS + "    re/canopenwindow.cpp" + BS)
+patch("SavvyCAN.pro",
+      "    re/busstatswindow.h" + BS,
+      "    re/busstatswindow.h" + BS + "    re/canopenwindow.h" + BS)
 
 # Bus Statistics window in the RE Tools menu
 patch("mainwindow.cpp",
@@ -81,6 +91,21 @@ patch("mainwindow.cpp",
       "        busStatsWindow->activateWindow();\n"
       "    });\n\n"
       "    //Automatically create the connection window so it can be updated even if we never opened it.\n")
+
+# CANopen window, menu entry just before Bus Statistics
+patch("mainwindow.cpp",
+      '#include "re/busstatswindow.h"\n#include <QPointer>\n',
+      '#include "re/busstatswindow.h"\n#include <QPointer>\n#include "re/canopenwindow.h"\n')
+patch("mainwindow.cpp",
+      "    connect(ui->menu_RE_Tools->addAction(tr(\"Bus Statistics\")), &QAction::triggered, this, [this]() {\n",
+      "    connect(ui->menu_RE_Tools->addAction(tr(\"CANopen\")), &QAction::triggered, this, [this]() {\n"
+      "        static QPointer<CANopenWindow> canopenWindow;\n"
+      "        if (!canopenWindow) canopenWindow = new CANopenWindow(this);\n"
+      "        canopenWindow->show();\n"
+      "        canopenWindow->raise();\n"
+      "        canopenWindow->activateWindow();\n"
+      "    });\n"
+      "    connect(ui->menu_RE_Tools->addAction(tr(\"Bus Statistics\")), &QAction::triggered, this, [this]() {\n")
 
 patch("connections/canconconst.h",
       "        CANLOGSERVER,\n        NONE\n",

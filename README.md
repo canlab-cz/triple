@@ -115,6 +115,9 @@ port, so it works without the kernel module and on Windows too. See
 
 ![SavvyCAN with a USB2CAN Triple](doc/img/savvycan-triple.png)
 
+`tools/canopen_sim.py` is a small simulated CANopen node (heartbeat, NMT,
+SDO, EMCY) for testing CANopen tools on any SocketCAN interface.
+
 ## Without the kernel module
 
 `tools/triple_dump.py` talks to an adapter directly over its serial port

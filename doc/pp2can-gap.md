@@ -65,7 +65,7 @@ or missing details, **no** = not available.
 
 | PP2CAN | SavvyCAN | Status | Notes |
 |---|---|---|---|
-| CANopen tools, CANopen Safety, CANopen FD, dictionary | none | no | Largest gap. SavvyCAN has J1939, ISO-TP and UDS |
+| CANopen tools, CANopen Safety, CANopen FD, dictionary | CANopen window (added): NMT, heartbeat / EMCY monitor, SDO client, SYNC | partial | No PDO decoding from EDS yet, no Safety / FD specifics |
 | Scripting | JavaScript (QJSEngine) Scripting Interface | yes | Different language than PP2CAN scripts |
 | Plugins | none, but open source | partial | New windows are added in C++ |
 | Listen only | per bus in the connection window | yes | |
@@ -80,10 +80,10 @@ Ranked by value for CANLAB users and by how much is unblocked today.
 
 1. ~~Bus statistics window.~~ Done 2026-10-14: RE Tools > Bus
    Statistics (`gui/savvycan/re/busstatswindow.*`).
-2. **CANopen basics.** NMT master commands, heartbeat / node monitor, SDO
-   client (expedited and segmented upload/download), PDO decoding from an
-   EDS file. The biggest functional gap; a sizeable but well specified
-   job (CiA 301). Could live upstream as a bus protocol next to J1939.
+2. **CANopen basics.** First increment done 2026-10-14: RE Tools >
+   CANopen with NMT, node monitor, EMCY, SYNC and an SDO client
+   (`gui/savvycan/re/canopenwindow.*`). Next: PDO decoding from an EDS
+   file, SDO block transfer, LSS.
 3. **Response meter.** Request ID, response ID, statistics of the delay.
    Small window on top of the frame stream.
 4. **Data / bit / ASCII sender with sliders.** A "panel" window that

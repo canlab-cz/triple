@@ -24,6 +24,18 @@ What the connection provides:
 
 ![Bus Statistics window](../../doc/img/savvycan-bus-statistics.png)
 
+* a CANopen window (RE Tools menu): node list from heartbeat, boot-up and
+  EMCY messages, NMT commands, SYNC, and an SDO client that reads and
+  writes any object (expedited and segmented) and shows abort codes in
+  plain text; "Read identity" reads 1000, 1008, 1009, 100A and 1018.
+  Also independent of the Triple connection.
+
+![CANopen window](../../doc/img/savvycan-canopen.png)
+
+To try it without a CANopen device, run the simulated node from
+`tools/canopen_sim.py` on a Linux SocketCAN interface on the same bus:
+`python3 tools/canopen_sim.py can0 --node 5`.
+
 ## Apply to an upstream checkout
 
 ```sh
