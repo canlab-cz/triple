@@ -87,6 +87,17 @@ and patched with `gui/savvycan/apply.py`. To use a local clone instead:
 in `dist\work\`. `build.ps1` finds Inno Setup in its usual folders or
 takes `-Iscc <path to ISCC.exe>`.
 
+## Customer bundle
+
+After a build, `python dist/make-customer-zip.py` (needs `pip install
+markdown`) packs everything a customer needs into
+`dist/out/USB2CAN-Triple-<version>.zip`: a start page (`START-HERE.html`,
+`README.txt`) that says which file is for which system and how to install
+it, the packages in `Windows/`, `Linux/Debian-Ubuntu/` and
+`Linux/Other-Linux/`, the user guides as HTML with screenshots, checksums
+and a license overview. Internal documents (plan, gap analysis, build notes)
+are left out.
+
 ## Testing
 
 Both Linux test scripts need Docker and install into clean containers:

@@ -22,7 +22,17 @@ help (F1 on any window).
 
 ## 1. Install
 
-SavvyCAN is built from source with the changes applied:
+Ready-made packages, with installation steps in
+[dist/README.md](../dist/README.md):
+
+* **Windows 10 / 11**: `usb2can-triple-<version>-windows-x64-setup.exe`
+  (installer) or the portable `.zip` (unzip, run `SavvyCAN\SavvyCAN.exe`).
+* **Ubuntu 22.04+, Debian 12+**: `savvycan-triple_<version>-1_amd64.deb`
+  (command `savvycan-triple`), with the driver and tools packages.
+* **Other Linux**: the `linux-x86_64.tar.gz` package, SavvyCAN with its Qt
+  libraries included (`sudo ./install.sh`, or run `savvycan/savvycan`).
+
+To build it from source instead, SavvyCAN is patched with the changes:
 
 * **Windows**: Qt 6.8 with MinGW, SavvyCAN's `QT6WIP` branch.
 * **Linux**: Qt 5.15 from the distribution, SavvyCAN `master`.
