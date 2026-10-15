@@ -1,0 +1,27 @@
+# kernel module build output
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+.*.cmd
+*.symvers
+*.order
+.tmp_versions/
+Module.markers
+# daemon build output
+*.o32
+*.o64
+.depend*
+tripled_32
+tripled_64
+utility/tripled_32
+utility/tripled_64
+__pycache__/
+*.pyc
+# reverse engineering command line tool
+tools/canre/canre_cli
+tools/canre/canre_cli.exe
+# distribution build output
+dist/out/
+dist/work/

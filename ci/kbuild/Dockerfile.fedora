@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 CANLAB s.r.o.
+FROM fedora:latest
+RUN dnf install -y gcc make kernel-devel elfutils-libelf-devel kmod && dnf clean all

@@ -1,19 +1,18 @@
-Q                := @
-PWD              ?= $(shell pwd)
-KERNEL_SRC       ?= /lib/modules/`uname -r`/build
-INCLUDE_DIR      ?= $(PWD)/include
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (c) 2026 CANLAB s.r.o.
+KERNEL_SRC       ?= /lib/modules/$(shell uname -r)/build
+MODULE_DIR       := $(CURDIR)
 
-CFILES           := main.c triple_parse.c tx.c
 TARGET           := usb2cansocketcan.ko
 obj-m            := usb2cansocketcan.o
-usb2cansocketcan-y := $(CFILES:.c=.o)
-ccflags-y        := -I$(INCLUDE_DIR) -std=gnu99 -Wno-declaration-after-statement
-
+usb2cansocketcan-y := triple.o triple_proto.o
+# $(M) is the module directory handed to the kernel build system
+ccflags-y        := -I$(M)/include -Wno-declaration-after-statement
 
 default:
-	$(MAKE) -C$(KERNEL_SRC) M=$(PWD) modules
-	$(Q)cp $(TARGET) ../
+	$(MAKE) -C $(KERNEL_SRC) M=$(MODULE_DIR) modules
+	@cp $(TARGET) ../
 
 clean:
-	$(MAKE) -C$(KERNEL_SRC) M=$(PWD) clean
-	$(Q)rm -f ../$(TARGET)
+	$(MAKE) -C $(KERNEL_SRC) M=$(MODULE_DIR) clean
+	@rm -f ../$(TARGET)

@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 CANLAB s.r.o.
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  codec-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host-side codec round-trip test
+        run: make -C tests/codec test
+      - name: Python codec test
+        run: python3 tools/test_triple_proto.py
+      - name: SavvyCAN helper tests (identifier calculator, PP2CAN log format, CANopen EDS and PDO decoding, print layout, RE analysis, AI tools and limits, SDO block transfer and LSS)
+        run: make -C tests/gui test
+
+  kernel-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [u2204, u2404, fedora]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile driver and daemon against ${{ matrix.target }} kernel headers
+        run: sh ci/kbuild/run.sh ${{ matrix.target }}

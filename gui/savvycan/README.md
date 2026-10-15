@@ -1,0 +1,122 @@
+# SavvyCAN with the USB2CAN Triple
+
+[SavvyCAN](https://github.com/collin80/SavvyCAN) is an MIT-licensed Qt
+CAN bus analyzer (multi-bus log, DBC decoding, graphing, replay, frame
+sender with scripting, ISO-TP / UDS tools). This directory adds a native
+connection type for the CANLAB USB2CAN Triple, talking to the adapter over
+its serial port with the shared protocol codec, on Linux, Windows and
+macOS, without the kernel module.
+
+How to use it is in the user guides:
+
+* [SavvyCAN with the Triple](../../doc/savvycan-guide.md): connection,
+  capture, sending, Bus Statistics, CANopen, Data Panel, Response Meter,
+  CAN Calculator, PP2CAN logs, printing;
+* [Reverse engineering](../../doc/reverse-engineering.md): Signal Finder
+  and the AI Assistant.
+
+This page covers how the changes are applied to SavvyCAN and built.
+
+What is added:
+
+| Where | What | Files |
+|---|---|---|
+| Connection | "CANLAB USB2CAN Triple (serial)": three buses, CAN FD on bus 2, hardware timestamps, bus state and overflow error frames | `connections/triple_serial.*`, `connections/triple_proto.*` (the codec from `driver/`) |
+| RE Tools | Bus Statistics, CANopen, Response Meter, CAN Calculator, Signal Finder, AI Assistant | `re/*` |
+| Send Frames | Data Panel | `re/datapanelwindow.*` |
+| File | Load / save PP2CAN logs, Print Log | `pp2canlog*`, `logprint*` |
+
+The logic of the tool windows (analysis, AI tools and limits, CANopen
+EDS parsing and block transfer, PP2CAN format, print layout, ID
+conversions) is in Qt-free headers, unit tested in `tests/gui`.
+
+![SavvyCAN with a USB2CAN Triple](../../doc/img/savvycan-triple.png)
+
+## Apply to an upstream checkout
+
+```sh
+git clone https://github.com/collin80/SavvyCAN
+python3 gui/savvycan/apply.py SavvyCAN     # copies the sources, edits 8 upstream files
+```
+
+`apply.py` is idempotent and works on both upstream lines:
+
+| Upstream | Qt | Build system | Tested commit |
+|---|---|---|---|
+| `master` | 5.15 | qmake | `e439670` (Linux, WSL2) |
+| `QT6WIP` branch | 6.8 | CMake | `3288f1f` (Windows 11, MinGW) |
+
+The connection code compiles against either: master passes `CANFrame`
+(a `QCanBusFrame`), QT6WIP its own `CommFrame`, and a small typedef layer
+in `triple_serial.h` covers the difference. `savvycan-upstream.patch` is
+the change against master as a plain diff.
+
+Files added to `SavvyCAN/connections/`:
+
+| File | Content |
+|---|---|
+| `triple_serial.h/.cpp` | the `CANConnection` implementation (`CANCon::TRIPLE`) |
+| `triple_proto.h/.c` | the protocol codec, copied from `driver/` |
+
+## Build
+
+Linux / WSL2 (Ubuntu 22.04):
+
+```sh
+sudo apt install qtbase5-dev qt5-qmake libqt5serialbus5-dev libqt5serialport5-dev \
+     qtdeclarative5-dev qttools5-dev libqt5websockets5-dev libqt5opengl5-dev
+mkdir SavvyCAN/build && cd SavvyCAN/build
+qmake ../SavvyCAN.pro CONFIG+=release && make -j$(nproc)
+./SavvyCAN
+```
+
+Windows (Qt 6.8 with the MinGW 13.1 kit and the SerialBus / SerialPort
+modules, as installed by the Qt online installer):
+
+```bat
+git clone --branch QT6WIP https://github.com/collin80/SavvyCAN
+python gui\savvycan\apply.py SavvyCAN
+set PATH=C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\Ninja;C:\Qt\Tools\CMake_64\bin;C:\Qt\6.8.1\mingw_64\bin;%PATH%
+cmake -S SavvyCAN -B SavvyCAN\build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/6.8.1/mingw_64
+cmake --build SavvyCAN\build -j 16
+SavvyCAN\build\SavvyCAN.exe
+```
+
+To run it outside that shell, collect the Qt DLLs next to the executable
+with `windeployqt SavvyCAN.exe`. The adapter appears as `COMx` and uses
+Windows' built-in `usbser.sys` driver, so nothing needs installing.
+
+## Use
+
+Connection > Open Connection Window > Add New Device Connection >
+"CANLAB USB2CAN Triple (serial)". The port list puts Triple adapters first.
+After "Create New Connection" the device shows three buses; select a bus
+tab under Bus Details to change bitrate, listen only or (bus 2) CAN FD and
+data rate, then "Save Bus Settings". Enable Console shows every message
+exchanged with the adapter, the firmware version and the error counters.
+
+Defaults at connect: CAN1 250 kbit/s, CAN2 500 kbit/s, CAN3 FD 125 kbit/s
+nominal, 6.7 Mbit/s data, ISO.
+
+SavvyCAN's quick-send grid and frame sender read unprefixed numbers as
+decimal: type `0x7AB` and `0x11 0x22`, not `7AB` and `11 22`.
+
+Verified on 2026-10-14 against the Linux kernel driver on a second adapter,
+both with SavvyCAN master under WSLg and with the QT6WIP build on
+Windows 11: receive on all three buses including CAN FD with BRS, hardware
+timestamps, transmit from the frame grid.
+
+![SavvyCAN on Windows with a USB2CAN Triple](../../doc/img/savvycan-triple-windows.png)
+
+If an adapter was attached to WSL2 with usbipd and is handed back to
+Windows, Windows may not be able to open its port until it is physically
+replugged.
+
+## Limits
+
+* The serial port cannot be shared with the kernel driver; detach the line
+  discipline first (`pkill ldattach`).
+* CAN FD frames are accepted on bus 2 only; frames longer than 100 bytes on
+  the wire are dropped with a console message (adapter firmware limit).
+* The adapter's receive side saturates at roughly 2000 to 5000 frames/s
+  per adapter; the firmware drops silently beyond that.
